@@ -7,18 +7,6 @@ from os import environ
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = environ.get('DB_URL')
 db = SQLAlchemy(app)
-# db.init_app()
-
-# # Database connection function
-# def get_db_connection():
-#     db = psycopg2.connect(
-#         host=DB_CONFIG['host'],
-#         port=DB_CONFIG['port'],
-#         database=DB_CONFIG['database'],
-#         user=DB_CONFIG['user'],
-#         password=DB_CONFIG['password']
-#     )
-#     return db
 
 
 class Kafka_Req(db.Model):
@@ -60,7 +48,7 @@ def get_kafka_reqs():
          # Query the database for all items
         kafka_requests = Kafka_Req.query.all()
         # Convert the result to a list of dictionaries
-        kafka_requests_l = [kafka_request.to_dict() for kafka_request in kafka_requests]
+        kafka_requests_l = [kafka_request.toJson() for kafka_request in kafka_requests]
         return make_response(jsonify(kafka_requests_l), 200)
         
     except Exception:
@@ -72,7 +60,7 @@ def get_kafka_req(id):
     try:
         kafka_req = Kafka_Req.query.filter_by(id=id).first()
         if kafka_req:
-            return make_response(jsonify({'Kafka Request' : kafka_req.json()}), 200)
+            return make_response(jsonify({'Kafka Request' : kafka_req.toJson()}), 200)
         return make_response(jsonify({'message': 'Request not found'}), 404)
     except Exception:
         return make_response(jsonify({'message' : 'Error getting request'}), 500)
