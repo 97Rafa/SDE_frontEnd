@@ -13,7 +13,7 @@ class Kafka_Req(db.Model):
     __tablename__ = 'kafka_reqs'
 
     id = db.Column(db.Integer, primary_key=True)
-    status = db.Column(db.String(30), nullable=False)
+    status = db.Column(db.String(30), nullable=False, default='pending')
     req_type = db.Column(db.String(30), nullable=False)
     body = db.Column(JSON, nullable=False)
 
@@ -34,7 +34,7 @@ def test():
 def create_kafka_req():
     try:
         data = request.get_json()
-        new_kafka_req = Kafka_Req(status=data['status'], req_type=data['req_type'], body=data['body'])
+        new_kafka_req = Kafka_Req(req_type=data['req_type'], body=data['body'])
         db.session.add(new_kafka_req)
         db.session.commit()
         return make_response(jsonify({'message' : 'Kafka request created'}), 201)
