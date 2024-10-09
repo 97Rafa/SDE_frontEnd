@@ -5,7 +5,7 @@ import json
 
 # PostgreSQL connection settings
 POSTGRESQL_CONFIG = {
-    'host': '172.18.0.2',
+    'host': '172.18.0.4',
     'port': '5432',
     'database': 'postgres',
     'user': 'postgres',
@@ -81,10 +81,13 @@ def poll_database():
                 # Routing logic
                 if req_type == 'Data':
                     topic = DAT_TOPIC
+                    send_to_kafka(topic, record_body)
                 elif req_type == 'Request':
                     topic = REQ_TOPIC
+                    send_to_kafka(topic, record_body)
+                else:
+                    print('Wrong req_type!')
                 
-                send_to_kafka(topic, record_body)
                 last_id = record_id  # Update the last processed ID
 
             # Sleep for a while before polling again
