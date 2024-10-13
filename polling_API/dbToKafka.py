@@ -3,9 +3,10 @@ import psycopg2
 from kafka import KafkaProducer
 import json
 
+
 # PostgreSQL connection settings
 POSTGRESQL_CONFIG = {
-    'host': '172.18.0.4',
+    'host': '172.18.0.42',
     'port': '5432',
     'database': 'postgres',
     'user': 'postgres',
@@ -93,7 +94,7 @@ def poll_database():
             # Sleep for a while before polling again
             time.sleep(POLLING_INTERVAL)
     except KeyboardInterrupt:
-        print("=====================================")
+        print("\n=====================================")
         print("======= Polling stopped =============")
         print("=====================================")
     finally:

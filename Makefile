@@ -9,3 +9,7 @@ db:
 
 stop:
 	sudo docker compose stop
+
+
+all: 
+	sudo docker compose up -d

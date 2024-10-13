@@ -9,6 +9,10 @@ services:
       - DB_URL=postgresql://postgres:postgres@flask_db:5432/postgres
     depends_on:
       - flask_db
+    networks:
+      my_network:
+        ipv4_address: 172.18.0.41
+
   flask_db:
     container_name: flask_db
     image: postgres:12
@@ -20,11 +24,17 @@ services:
       - POSTGRES_DB=postgres
     volumes:
       - pgdata:/var/lib/postgresql/data
+    networks:
+      my_network:
+        ipv4_address: 172.18.0.42
 
   zookeeper:
     image: wurstmeister/zookeeper:latest
     ports:
       - "2181:2181"
+    networks:
+      my_network:
+        ipv4_address: 172.18.0.45
 
   kafka:
     image: wurstmeister/kafka:latest
@@ -41,5 +51,16 @@ services:
       KAFKA_CREATE_TOPICS: "request_topic:1:1, data_topic:1:1, estimation_topic:1:1"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      my_network:
+        ipv4_address: 172.18.0.44
+
 volumes:
   pgdata: {}
+
+networks:
+  my_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.18.0.0/16
