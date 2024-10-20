@@ -1,6 +1,7 @@
+import threading
 import time
 import psycopg2
-from kafka import KafkaProducer
+from kafka import KafkaProducer, KafkaConsumer
 import json
 
 
@@ -17,6 +18,7 @@ POSTGRESQL_CONFIG = {
 KAFKA_BROKER = 'localhost:9092'
 DAT_TOPIC = 'data_topic'
 REQ_TOPIC = 'request_topic'
+EST_TOPIC = 'estimation_topic'
 
 # Polling interval in seconds
 POLLING_INTERVAL = 5
@@ -102,5 +104,82 @@ def poll_database():
         cursor.close()
         conn.close()
 
-if __name__ == '__main__':
+
+# Function to insert data into the new PostgreSQL table
+def insert_into_new_table(conn, data):
+    """
+    Insert consumed data into the new PostgreSQL table.
+    """
+    try:
+        query = f"INSERT INTO kafka_ests (body,status) VALUES('{data}', 'completed');"  # Customize columns
+        cursor = conn.cursor()
+        cursor.execute(query)
+        conn.commit()
+        print(f"Inserted data into new table: {data}")
+    except Exception as e:
+        print(f"Error inserting into new table: {e}")
+        conn.rollback()
+
+# Kafka consumer to poll from the estimation_topic
+def consume_from_estimation_topic():
+    """
+    Consume messages from estimation_topic and insert into the new table.
+    """
+    consumer = KafkaConsumer(
+        EST_TOPIC,
+        bootstrap_servers=KAFKA_BROKER,
+        auto_offset_reset='earliest',
+        enable_auto_commit=True,
+        group_id='estimation-consumer-group',
+        value_deserializer=lambda x: json.loads(x.decode('utf-8'))
+    )
+
+    # Get PostgreSQL connection
+    conn = get_postgresql_connection()
+    if conn is None:
+        print("Connection not found")
+        return
+    try:
+        while True:
+            for message in consumer:
+    
+                estimation_data = json.dumps(message.value)
+
+                # print(json.dumps(message.value))
+
+                # Insert into PostgreSQL new table
+                insert_into_new_table(conn, estimation_data)
+
+                # Optionally print or log the data consumed
+                print(f"Consumed data from {EST_TOPIC}: {estimation_data}")
+
+    except KeyboardInterrupt:
+        print("Cancelled")
+    finally:
+        # Close the database connection
+        conn.close()
+
+
+# Thread to poll the database for request and data topics
+def poll_database_thread():
+    print("Starting database polling thread...")
     poll_database()
+
+# Thread to consume from estimation_topic and insert into new table
+def consume_estimation_topic_thread():
+    print("Starting Kafka consumer thread...")
+    consume_from_estimation_topic()
+
+# Main function to start threads
+if __name__ == "__main__":
+    # Create two threads: one for database polling and one for Kafka consumption
+    db_thread = threading.Thread(target=poll_database_thread)
+    kafka_thread = threading.Thread(target=consume_estimation_topic_thread)
+
+    # Start both threads
+    db_thread.start()
+    kafka_thread.start()
+
+    # Join threads to keep them running
+    db_thread.join()
+    kafka_thread.join()

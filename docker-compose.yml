@@ -1,8 +1,10 @@
 services:
   flask_app:
     container_name: flask_app
-    image: 97raf/flask_live_app:1.0.0
-    build: .
+    # image: 97raf/flask_live_app:1.0.0
+    build: 
+      context: .
+      dockerfile: Dockerfile 
     ports:
       - "4000:4000"
     environment:

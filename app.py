@@ -20,14 +20,28 @@ class Kafka_Req(db.Model):
     def toJson(self):
         return {'id' : self.id, 'status' : self.status, 'req_type' : self.req_type ,'body' : self.body}
     
+class Kafka_Est(db.Model):
+    __tablename__ = 'kafka_ests'
 
+    id = db.Column(db.Integer, primary_key=True)
+    status = db.Column(db.String(30), nullable=True, default='completed')
+    body = db.Column(JSON, nullable=False)
+
+    def toJson(self):
+        return {'id' : self.id, 'status' : self.status,'body' : self.body}
+    
 with app.app_context():
-    db.create_all()
+        db.create_all()
 
 #create a test route
 @app.route('/test', methods=['GET'])
 def test():
     return make_response(jsonify({'message': 'test route'}), 200)
+
+# =============================================
+# ========== Requests table ===================
+# =============================================
+
 
 #create a kafka request
 @app.route('/kafka_reqs', methods=['POST'])
@@ -77,6 +91,23 @@ def delete_kafka_req(id):
         return make_response(jsonify({'message': 'Request not found'}), 404)
     except Exception:
         return make_response(jsonify({'message' : 'Error deleting request'}), 500)
+
+# =============================================
+# ========== Estimations table ================
+# =============================================
+#get all requests
+@app.route('/kafka_ests', methods=['GET'])
+def get_kafka_ests():
+    try:
+         # Query the database for all items
+        kafka_estimations = Kafka_Est.query.all()
+        # Convert the result to a list of dictionaries
+        kafka_estimations_l = [kafka_estimation.toJson() for kafka_estimation in kafka_estimations]
+        return make_response(jsonify(kafka_estimations_l), 200)
+        
+    except Exception:
+        return make_response(jsonify({'message' : 'Error getting estimations'}), 500)
+
 
 if __name__ == "__main__":
     app.run(debug=True, host='0.0.0.0')
