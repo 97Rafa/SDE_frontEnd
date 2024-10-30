@@ -13,3 +13,8 @@ down:
 
 all: 
 	sudo docker compose up --build
+
+quick: 
+	sudo docker compose up
+
+
