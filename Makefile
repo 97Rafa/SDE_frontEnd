@@ -7,9 +7,9 @@ app:
 db:
 	sudo docker compose up -d flask_db
 
-stop:
-	sudo docker compose stop
+down:
+	sudo docker compose down
 
 
 all: 
-	sudo docker compose up
+	sudo docker compose up --build

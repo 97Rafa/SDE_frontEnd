@@ -1,12 +1,19 @@
-from flask import Flask, request, jsonify, make_response
-from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy.dialects.postgresql import JSON
+from flask import Flask, request, jsonify, make_response,json
 from os import environ
 from datetime import timedelta
-from models import db, Requests, Estimations, create_tables
+from models import db, Requests, Estimations, DataIn, create_tables
+from kafkaClient import get_kafka_consumer, get_kafka_producer
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = environ.get('DB_URL')
+
+
+
+# Configure Kafka broker
+KAFKA_BROKER = environ.get('KAFKA_BROKER', 'kafka:9093')
+DAT_TOPIC = 'data_topic'
+REQ_TOPIC = 'request_topic'
+EST_TOPIC = 'estimation_topic'
 
 # Initialize the database
 db.init_app(app)
@@ -15,10 +22,51 @@ db.init_app(app)
 create_tables(app)
 
 
-#create a test route
-@app.route('/test', methods=['GET'])
+#Root route
+@app.route('/', methods=['GET'])
 def test():
-    return make_response(jsonify({'message': 'test route'}), 200)
+    return "SDE Front End"
+
+
+
+# =============================================
+# ========== Kafka Direct =====================
+# =============================================
+
+producer = get_kafka_producer(KAFKA_BROKER)
+
+@app.route('/produce/<topic>', methods=['POST'])
+def produce_message(topic):
+    if topic not in [DAT_TOPIC, REQ_TOPIC]:
+        return jsonify({'error': 'Invalid topic'}), 400
+    try:
+        data = request.json
+        if not data:
+            return jsonify({'error': 'Empty data'}), 400
+
+        producer.send(topic, value=data)
+        producer.flush()
+        return jsonify({'status': f'Message sent to topic: {topic}'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/consume/<topic>', methods=['GET'])
+def consume_message(topic):
+    try:
+        consumer = get_kafka_consumer(topic, KAFKA_BROKER)
+        messages = []
+
+        # Poll the topic for a few seconds to collect messages
+        for message in consumer:
+            messages.append(message.value)
+            if len(messages) >= 10:  # Limit the number of messages returned
+                break
+
+        return jsonify({'messages': messages}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 
 # =============================================
 # ========== Requests table ===================
@@ -27,14 +75,13 @@ def test():
 
 #create a kafka request
 @app.route('/requests', methods=['POST'])
-def create_kafka_req():
+def create_request():
     try:
         data = request.get_json()
-        new_kafka_req = Requests(
-            req_type=data['req_type'],
+        new_request = Requests(
             body=data['body']
             )
-        db.session.add(new_kafka_req)
+        db.session.add(new_request)
         db.session.commit()
         return make_response(jsonify({'message' : 'Kafka request created'}), 201)
     except Exception:
@@ -42,40 +89,50 @@ def create_kafka_req():
 
 #get all requests
 @app.route('/requests', methods=['GET'])
-def get_kafka_reqs():
+def get_requests():
     try:
          # Query the database for all items
-        kafka_requests = Requests.query.all()
+        requests = Requests.query.all()
         # Convert the result to a list of dictionaries
-        kafka_requests_l = [kafka_request.toJson() for kafka_request in kafka_requests]
-        return make_response(jsonify(kafka_requests_l), 200)
+        requests_l = [request.toJson() for request in requests]
+        return make_response(jsonify(requests_l), 200)
         
     except Exception:
         return make_response(jsonify({'message' : 'Error getting requests'}), 500)
 
-#get a request by id
-@app.route('/requests/<int:id>', methods=['GET'])
-def get_kafka_req(id):
+
+# =============================================
+# ========== Data table ===================
+# =============================================
+
+
+#create a Data input
+@app.route('/dataIn', methods=['POST'])
+def create_DataIn():
     try:
-        kafka_req = Requests.query.filter_by(id=id).first()
-        if kafka_req:
-            return make_response(jsonify({'Kafka Request' : kafka_req.toJson()}), 200)
-        return make_response(jsonify({'message': 'Request not found'}), 404)
+        data = request.get_json()
+        new_dataIn = DataIn(
+            body=data['body']
+            )
+        db.session.add(new_dataIn)
+        db.session.commit()
+        return make_response(jsonify({'message' : 'Data were inserted'}), 201)
     except Exception:
-        return make_response(jsonify({'message' : 'Error getting request'}), 500)
-    
-#delete a request by id
-@app.route('/requests/<int:id>', methods=['DELETE'])
-def delete_kafka_req(id):
+        return make_response(jsonify({'message' : 'Error inserting Data'}), 500)
+
+#get all data
+@app.route('/dataIn', methods=['GET'])
+def get_DataIn():
     try:
-        kafka_req = Requests.query.filter_by(id=id).first()
-        if kafka_req:
-            db.session.delete(kafka_req)
-            db.session.commit()
-            return make_response(jsonify({'message' : 'Request deleted'}), 200)
-        return make_response(jsonify({'message': 'Request not found'}), 404)
+         # Query the database for all items
+        dataIns = DataIn.query.all()
+        # Convert the result to a list of dictionaries
+        dataIn_l = [dataIn.toJson() for dataIn in dataIns]
+        return make_response(jsonify(dataIn_l), 200)
+        
     except Exception:
-        return make_response(jsonify({'message' : 'Error deleting request'}), 500)
+        return make_response(jsonify({'message' : 'Error getting Data'}), 500)
+
 
 # =============================================
 # ========== Estimations table ================
@@ -109,6 +166,19 @@ def get_ests():
         return make_response(jsonify({'message' : 'Estimation request created'}), 201)
     except Exception:
         return make_response(jsonify({'message' : 'Error asking for estimation'}), 500)
+
+#get all estimations
+@app.route('/estimations', methods=['GET'])
+def get_estimations():
+    try:
+         # Query the database for all items
+        estimations = Estimations.query.all()
+        # Convert the result to a list of dictionaries
+        estimations_l = [estimation.toJson() for estimation in estimations]
+        return make_response(jsonify(estimations_l), 200)
+        
+    except Exception:
+        return make_response(jsonify({'message' : 'Error getting estimations'}), 500)
 
 
 if __name__ == "__main__":

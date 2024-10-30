@@ -9,11 +9,21 @@ class Requests(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     status = db.Column(db.String(30), nullable=False, default='pending')
-    req_type = db.Column(db.String(30), nullable=False)
     body = db.Column(JSON, nullable=False)
 
     def toJson(self):
-        return {'id': self.id, 'status': self.status, 'req_type': self.req_type, 'body': self.body}
+        return {'id': self.id, 'status': self.status, 'body': self.body}
+
+class DataIn(db.Model):
+    __tablename__ = 'datain'
+
+    id = db.Column(db.Integer, primary_key=True)
+    status = db.Column(db.String(30), nullable=False, default='pending')
+    body = db.Column(JSON, nullable=False)
+
+    def toJson(self):
+        return {'id': self.id, 'status': self.status, 'body': self.body}
+
 
 class Estimations(db.Model):
     __tablename__ = 'estimations'

@@ -1,3 +1,4 @@
 flask
 psycopg2-binary
 Flask-SQLAlchemy
+git+https://github.com/dpkp/kafka-python.git
