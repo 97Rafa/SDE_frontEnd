@@ -21,7 +21,7 @@ REQ_TOPIC = 'request_topic'
 EST_TOPIC = 'estimation_topic'
 
 # Polling interval in seconds
-POLLING_INTERVAL = 5
+POLLING_INTERVAL = 3
 
 # Create Kafka producer
 producer = KafkaProducer(
