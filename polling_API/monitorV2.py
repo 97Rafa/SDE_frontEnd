@@ -41,7 +41,11 @@ def setup_trigger(cursor, table_name):
     RETURNS TRIGGER AS $$
     BEGIN
          -- Sends a notification with the payload (e.g., the row's ID or the entire row as JSON)
-        PERFORM pg_notify('my_channel', row_to_json(NEW)::text);
+        PERFORM pg_notify('my_channel',
+                           json_build_object(
+                                'table', '{table_name}',
+                                'data', row_to_json(NEW)
+                            )::text);
         RETURN NEW;
     END;
     $$ LANGUAGE plpgsql;
@@ -80,11 +84,20 @@ try:
             while connection.notifies:
                 notify = connection.notifies.pop(0)
                 payload = json.loads(notify.payload)
-                print(f"Received notification: {payload}")
+                row_data = payload["data"]
+                table = payload["table"]
+                print(f"Received notification: {row_data} from table {table}")
+
+                if table == "requests":
+                    topic = REQ_TOPIC
+                elif table == "datain":
+                    topic = DAT_TOPIC
+                else:
+                    continue
                 
-                # # Send the payload to Kafka
-                # producer.send('your_kafka_topic', value=payload)
-                # print("Sent data to Kafka.")
+                # Send the payload to Kafka
+                producer.send(topic, row_data["body"])
+                print("Sent data to Kafka.")
                
 except KeyboardInterrupt:
     print("\nStopped listening.")
