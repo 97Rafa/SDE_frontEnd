@@ -2,7 +2,7 @@ import select
 import json
 import psycopg2
 import psycopg2.extensions
-from kafka import KafkaProducer
+from kafka import KafkaProducer, KafkaConsumer
 
 # PostgreSQL connection settings
 POSTGRESQL_CONFIG = {
@@ -25,6 +25,14 @@ producer = KafkaProducer(
     value_serializer=lambda v: json.dumps(v).encode('utf-8')  # Serialize data to JSON
 )
 
+# Initialize Kafka consumer
+consumer = KafkaConsumer(
+    EST_TOPIC,
+    bootstrap_servers=KAFKA_BROKER,
+    auto_offset_reset='earliest',
+    value_deserializer=lambda m: json.loads(m.decode('utf-8'))
+)
+
 def send_to_kafka(topic, message):
     """Send a message to the specified Kafka topic."""
     try:
@@ -40,7 +48,7 @@ def setup_trigger(cursor, table_name):
     CREATE OR REPLACE FUNCTION notify_{table_name}_insert()
     RETURNS TRIGGER AS $$
     BEGIN
-         -- Sends a notification with the payload (e.g., the row's ID or the entire row as JSON)
+         -- Sends a notification with the payload
         PERFORM pg_notify('my_channel',
                            json_build_object(
                                 'table', '{table_name}',
@@ -88,7 +96,7 @@ try:
                 table = payload["table"]
                 print(f"Received notification: {row_data} from table {table}")
 
-                if table == "requests":
+                if table == "requests" or table == "estimations":
                     topic = REQ_TOPIC
                 elif table == "datain":
                     topic = DAT_TOPIC
@@ -98,7 +106,8 @@ try:
                 # Send the payload to Kafka
                 producer.send(topic, row_data["body"])
                 print("Sent data to Kafka.")
-               
+
+              
 except KeyboardInterrupt:
     print("\nStopped listening.")
 

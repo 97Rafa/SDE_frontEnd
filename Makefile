@@ -1,20 +1,20 @@
 build:
-	sudo docker compose build
+	docker compose build
 
 app:
-	sudo docker compose up flask_app
+	docker compose up flask_app
 
 db:
-	sudo docker compose up -d flask_db
+	docker compose up -d flask_db
 
 down:
-	sudo docker compose down
+	docker compose down
 
 
 all: 
-	sudo docker compose up --build
+	docker compose up --build
 
 quick: 
-	sudo docker compose up
+	docker compose up
 
 

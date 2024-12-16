@@ -29,9 +29,10 @@ class Estimations(db.Model):
     __tablename__ = 'estimations'
 
     id = db.Column(db.Integer, primary_key=True)
-    synopsisID = db.Column(db.Integer, nullable=False)
+    synopsisUID = db.Column(db.Integer, nullable=False)
     timeout = db.Column(INTERVAL, nullable=False)
-    body = db.Column(JSON, nullable=True)
+    body = db.Column(JSON, nullable=False)
+    data = db.Column(JSON, nullable=True)
     last_req = db.Column(db.DateTime(timezone=True), nullable=True)
     last_data = db.Column(db.DateTime(timezone=True), nullable=True)
     toRefresh = db.Column(db.Boolean, nullable=False, default=True)
