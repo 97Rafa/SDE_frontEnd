@@ -1,3 +1,4 @@
+import threading,time
 import select
 import json
 import psycopg2
@@ -68,49 +69,106 @@ def setup_trigger(cursor, table_name):
     cursor.execute(create_function_sql)
     cursor.execute(create_trigger_sql)
 
-# Connect to the PostgreSQL database
-connection = psycopg2.connect(**POSTGRESQL_CONFIG)
-connection.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
-cursor = connection.cursor()
+def update_estimation(cursor, kafkaJson, est_uid):
+    update_function_sql = f"""
+        UPDATE estimations 
+        SET data = '{kafkaJson}'::jsonb,
+            last_data = (SELECT CURRENT_TIMESTAMP)
+        WHERE "synopsisUID" = {est_uid};
+        """
+    cursor.execute(update_function_sql)
 
-# Set up triggers on each table
-setup_trigger(cursor, 'requests')
-setup_trigger(cursor, 'datain')
-setup_trigger(cursor, 'estimations')
-print("Triggers created on tables requests, datain, and estimations.")
+def poll_db():
+    # Connect to the PostgreSQL database
+    connection = psycopg2.connect(**POSTGRESQL_CONFIG)
+    connection.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
+    cursor = connection.cursor()
 
-# Start listening for notifications
-cursor.execute("LISTEN my_channel;")
-print("Listening for notifications on 'my_channel'...")
+    # Set up triggers on each table
+    setup_trigger(cursor, 'requests')
+    setup_trigger(cursor, 'datain')
+    setup_trigger(cursor, 'estimations')
+    print("Triggers created on tables requests, datain, and estimations.")
 
-try:
+    # Start listening for notifications
+    cursor.execute("LISTEN my_channel;")
+    print("Listening for notifications on 'my_channel'...")
+
+    try:
+        while True:
+            if select.select([connection], [], [], 5) == ([], [], []):
+                print("Waiting for notifications...")
+            else:
+                connection.poll()
+                while connection.notifies:
+                    notify = connection.notifies.pop(0)
+                    payload = json.loads(notify.payload)
+                    row_data = payload["data"]
+                    table = payload["table"]
+                    print("--------------------------------------------------")
+                    print(f"Received notification from table {table}")
+                    print("--------------------------------------------------")
+
+                    if table == "requests" or table == "estimations":
+                        topic = REQ_TOPIC
+                    elif table == "datain":
+                        topic = DAT_TOPIC
+                    else:
+                        continue
+                    
+                    # Send the payload to Kafka
+                    producer.send(topic, row_data["body"])
+                    print("--------------------------------------------------")
+                    print("Sent data to Kafka.")                
+                    print("--------------------------------------------------")
+    finally:
+        # Clean up
+        cursor.close()
+        connection.close()
+
+
+def poll_kafka():
+    # Connect to the PostgreSQL database
+    connection = psycopg2.connect(**POSTGRESQL_CONFIG)
+    connection.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
+    cursor = connection.cursor()
+
+    # Initialize Kafka consumer
+    consumer = KafkaConsumer(
+        EST_TOPIC,
+        bootstrap_servers=KAFKA_BROKER,
+        auto_offset_reset='latest',
+        value_deserializer=lambda m: json.loads(m.decode('utf-8'))
+    )
+
     while True:
-        if select.select([connection], [], [], 5) == ([], [], []):
-            print("Waiting for notifications...")
-        else:
-            connection.poll()
-            while connection.notifies:
-                notify = connection.notifies.pop(0)
-                payload = json.loads(notify.payload)
-                row_data = payload["data"]
-                table = payload["table"]
-                print(f"Received notification: {row_data} from table {table}")
+        try:    
+            i=0
+            # Continuously listen for new messages
+            for message in consumer:
+                print("--------------------------------------------------")
+                print(f"{i}:Received Estimation")
+                print("--------------------------------------------------")
+                # Extract 'uid' from the 'estimation'
+                est_uid = message.value.get('uid')
 
-                if table == "requests" or table == "estimations":
-                    topic = REQ_TOPIC
-                elif table == "datain":
-                    topic = DAT_TOPIC
-                else:
-                    continue
-                
-                # Send the payload to Kafka
-                producer.send(topic, row_data["body"])
-                print("Sent data to Kafka.")
+                update_estimation(cursor, json.dumps(message.value), est_uid)
+                i+=1
+        finally:
+            # Clean up
+            cursor.close()
+            connection.close()
+            consumer.close()
 
-              
-except KeyboardInterrupt:
-    print("\nStopped listening.")
 
-# Clean up
-cursor.close()
-connection.close()
+# Main function to start threads
+if __name__ == "__main__":
+    # Create two threads
+    db_thread = threading.Thread(target=poll_db)
+    kafka_thread = threading.Thread(target=poll_kafka)
+
+    # Start both threads
+    db_thread.start()
+    kafka_thread.start()
+
+    print("Threads stopped. Exiting program.")

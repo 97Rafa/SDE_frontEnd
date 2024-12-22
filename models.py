@@ -29,7 +29,7 @@ class Estimations(db.Model):
     __tablename__ = 'estimations'
 
     id = db.Column(db.Integer, primary_key=True)
-    synopsisUID = db.Column(db.Integer, nullable=False)
+    synopsisUID = db.Column(db.Integer, nullable=False, unique=True)
     timeout = db.Column(INTERVAL, nullable=False)
     body = db.Column(JSON, nullable=False)
     data = db.Column(JSON, nullable=True)

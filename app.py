@@ -3,6 +3,7 @@ from os import environ
 from datetime import timedelta, datetime
 from models import db, Requests, Estimations, DataIn, create_tables
 from kafkaClient import get_kafka_consumer, get_kafka_producer
+from sqlalchemy.dialects.postgresql import insert
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = environ.get('DB_URL')
@@ -148,7 +149,7 @@ def parse_interval(interval_str):
 
 #create an estimation
 @app.route('/estimations', methods=['POST'])
-def get_ests():
+def create_est_request():
     try:
         data = request.get_json()
         if not data:
@@ -172,17 +173,33 @@ def get_ests():
             timeout = data['timeout']  # This will be a string, e.g., '5 minutes'
 
 
-        new_estimation_req = Estimations(
-            body=req_body, 
+        # new_estimation_req = Estimations(
+        #     body=req_body, 
+        #     synopsisUID=req_uid,
+        #     timeout=timedelta(**parse_interval(timeout)) if timeout else None,  # Convert to timedelta
+        #     last_req=now
+        #     )
+        # db.session.add(new_estimation_req)
+
+
+        # Perform upsert: Insert new record or update 'last_req' if conflict occurs
+        stmt = insert(Estimations).values(
+            body=req_body,
             synopsisUID=req_uid,
-            timeout=timedelta(**parse_interval(timeout)) if timeout else None,  # Convert to timedelta
+            timeout=timedelta(**parse_interval(timeout)) if timeout else None,
             last_req=now
-            )
-        db.session.add(new_estimation_req)
+        ).on_conflict_do_update(
+            index_elements=['synopsisUID'],  # Specify the column(s) to check for conflicts
+            set_={'last_req': now}  # Update the 'last_req' column on conflict
+        )
+
+        # Execute the statement
+        db.session.execute(stmt)
+        
         db.session.commit()
         return make_response(jsonify({'message' : 'Estimation request created'}), 201)
-    except Exception:
-        return make_response(jsonify({'message' : 'Error asking for estimation'}), 500)
+    except Exception as e:
+        return make_response(jsonify({'message' :{e}}), 500)
 
 #get all estimations
 @app.route('/estimations', methods=['GET'])

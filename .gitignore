@@ -1,1 +1,4 @@
 .kafka-venv
+test.py
+session.sh
+monitor.py
