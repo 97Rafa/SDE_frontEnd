@@ -1,12 +1,16 @@
 from flask import Flask, request, jsonify, make_response,json
-from os import environ
+from os import environ, path, makedirs
 from datetime import timedelta, datetime
 from models import db, Requests, Estimations, DataIn, create_tables
 from sqlalchemy.dialects.postgresql import insert
 from confluent_kafka import Producer, Consumer
+from werkzeug.utils import secure_filename
+import csv
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = environ.get('DB_URL')
+UPLOAD_FOLDER = 'static/files'
+makedirs(UPLOAD_FOLDER, exist_ok=True)  # Ensure the folder exists
 
 
 
@@ -36,7 +40,7 @@ def test():
 
 # Configuration for the Kafka producer
 conf = {
-    'bootstrap.servers': KAFKA_BROKER,  # Replace with your Kafka server address
+    'bootstrap.servers': KAFKA_BROKER,
 }
 
 # Create the Producer instance
@@ -138,8 +142,6 @@ def get_requests():
 # =============================================
 # ========== Data table ===================
 # =============================================
-
-
 #create a Data input
 @app.route('/dataIn', methods=['POST'])
 def create_DataIn():
@@ -153,6 +155,61 @@ def create_DataIn():
         return make_response(jsonify({'message' : 'Data were inserted'}), 201)
     except Exception:
         return make_response(jsonify({'message' : 'Error inserting Data'}), 500)
+    
+@app.route('/dataIn/csv', methods=['POST'])
+def create_DataIn_csv():
+    try:
+        # Ensure a file is part of the request
+        if 'file' not in request.files:
+            return make_response(jsonify({'message': 'No file part'}), 400)
+
+        file = request.files['file']
+
+        # If the user doesn't select a file or the file is empty
+        if file.filename == '':
+            return make_response(jsonify({'message': 'No selected file'}), 400)
+
+        # Ensure it's a CSV file
+        if not file.filename.endswith('.csv'):
+            return make_response(jsonify({'message': 'File is not a CSV'}), 400)
+
+        # Save the file to a secure location
+        filename = secure_filename(file.filename)
+        file_path = path.join(UPLOAD_FOLDER, filename)        
+        file.save(file_path)
+
+        # Read the CSV file
+        with open(file_path, newline='') as csvfile:
+            csvreader = csv.DictReader(csvfile)  # Automatically maps each row to a dictionary
+            new_dataIn_list = []
+
+            # Iterate over each row and add the data to the list
+            for row in csvreader:
+                # Create the body structure similar to your JSON
+                body = {
+                    'values': {
+                        'time': row['time'],
+                        'StockID': row['StockID'],
+                        'price': row['price']
+                    },
+                    'streamID': row['StreamID'],
+                    'dataSetkey': row['dataSetkey']
+                }
+                
+                # Create the DataIn object
+                new_dataIn = DataIn(body=body)
+
+                # Add to the list of DataIn objects
+                new_dataIn_list.append(new_dataIn)
+
+            # Insert the data into the database
+            db.session.add_all(new_dataIn_list)
+            db.session.commit()
+
+        return make_response(jsonify({'message': 'Data were inserted'}), 201)
+
+    except Exception as e:
+        return make_response(jsonify({'message': 'Error inserting Data', 'error': str(e)}), 500)
 
 #get all data
 @app.route('/dataIn', methods=['GET'])
@@ -204,16 +261,6 @@ def create_est_request():
         timeout = None
         if 'timeout' in data:
             timeout = data['timeout']  # This will be a string, e.g., '5 minutes'
-
-
-        # new_estimation_req = Estimations(
-        #     body=req_body, 
-        #     synopsisUID=req_uid,
-        #     timeout=timedelta(**parse_interval(timeout)) if timeout else None,  # Convert to timedelta
-        #     last_req=now
-        #     )
-        # db.session.add(new_estimation_req)
-
 
         # Perform upsert: Insert new record or update 'last_req' if conflict occurs
         stmt = insert(Estimations).values(

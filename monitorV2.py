@@ -147,8 +147,6 @@ def poll_db():
 
     # Start listening for notifications
     cursor.execute("LISTEN my_channel;")
-    print("Listening for notifications on 'my_channel'...")
-
     try:
         while not done:
             if select.select([connection], [], [], 5) == ([], [], []):
@@ -187,7 +185,7 @@ def poll_db():
                     elif operation == 'UPDATE':
                         print('This is an UPDATE operation')
                         if row_data['toRefresh']:
-                            print('The data has expired, let me grab some fresh ones')
+                            print('The estimation has expired, let me grab some fresh ones')
                             topic = REQ_TOPIC
                         else:
                             old_data=f"""
@@ -198,7 +196,7 @@ def poll_db():
                             cursor.execute(old_data)
                             result = cursor.fetchall()
                             print("--------------------------------------------------")
-                            print('The old data is still fresh:')
+                            print('The old estimation is still fresh:')
                             pprint(result)
                             print("--------------------------------------------------")
                             continue
