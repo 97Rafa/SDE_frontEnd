@@ -2,8 +2,8 @@ from flask import Flask, request, jsonify, make_response,json
 from os import environ
 from datetime import timedelta, datetime
 from models import db, Requests, Estimations, DataIn, create_tables
-from kafkaClient import get_kafka_consumer, get_kafka_producer
 from sqlalchemy.dialects.postgresql import insert
+from confluent_kafka import Producer, Consumer
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = environ.get('DB_URL')
@@ -34,7 +34,13 @@ def test():
 # ========== Kafka Direct =====================
 # =============================================
 
-producer = get_kafka_producer(KAFKA_BROKER)
+# Configuration for the Kafka producer
+conf = {
+    'bootstrap.servers': KAFKA_BROKER,  # Replace with your Kafka server address
+}
+
+# Create the Producer instance
+producer = Producer(conf)
 
 @app.route('/produce/<topic>', methods=['POST'])
 def produce_message(topic):
@@ -44,8 +50,12 @@ def produce_message(topic):
         data = request.json
         if not data:
             return jsonify({'error': 'Empty data'}), 400
+        
+        json_data = json.dumps(data) 
+        # Produce a message
+        producer.produce(topic, json_data.encode('utf-8'))
 
-        producer.send(topic, value=data)
+        # Wait for any outstanding messages to be delivered and delivery reports to be received
         producer.flush()
         return jsonify({'status': f'Message sent to topic: {topic}'}), 200
     except Exception as e:
@@ -53,21 +63,44 @@ def produce_message(topic):
 
 @app.route('/consume/<topic>', methods=['GET'])
 def consume_message(topic):
+    
+    # Configuration for the Kafka consumer
+    conf = {
+        'bootstrap.servers': KAFKA_BROKER,  # Replace with your Kafka server address
+        'group.id': 'my_group',
+        'auto.offset.reset': 'earliest'  # Can also be 'latest' depending on the use case
+    }
+
+    # Create the Consumer instance
+    consumer = Consumer(conf)
+
+    # Subscribe to the topic
+    consumer.subscribe([topic])
+
+    consumed_msgs = []
+    empty_count = 0  # Counter to track empty polls
+    max_empty_polls = 5  # Stop after N consecutive empty polls
+
     try:
-        consumer = get_kafka_consumer(topic, KAFKA_BROKER)
-        messages = []
+        while empty_count < max_empty_polls:
+            msg = consumer.poll(timeout=1.0)  # Adjust timeout if needed
 
-        # Poll the topic for a few seconds to collect messages
-        for message in consumer:
-            messages.append(message.value)
-            if len(messages) >= 10:  # Limit the number of messages returned
-                break
+            if msg is None:
+                empty_count += 1  # No message received, increase empty count
+                continue
 
-        return jsonify({'messages': messages}), 200
+            if msg.error():
+                print(f"Consumer error: {msg.error()}")
+                continue
+
+            data = json.loads(msg.value().decode('utf-8'))
+            consumed_msgs.append(data)
+            empty_count = 0  # Reset empty counter when a message is received
+        return jsonify({'messages': consumed_msgs}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
-
+    finally:
+        consumer.close()
 
 # =============================================
 # ========== Requests table ===================
@@ -217,4 +250,3 @@ def get_estimations():
 
 if __name__ == "__main__":
     app.run(debug=True,host='0.0.0.0' ,port='4000')
-
