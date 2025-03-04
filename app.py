@@ -70,9 +70,9 @@ def consume_message(topic):
     
     # Configuration for the Kafka consumer
     conf = {
-        'bootstrap.servers': KAFKA_BROKER,  # Replace with your Kafka server address
+        'bootstrap.servers': KAFKA_BROKER,  
         'group.id': 'my_group',
-        'auto.offset.reset': 'earliest'  # Can also be 'latest' depending on the use case
+        'auto.offset.reset': 'earliest'
     }
 
     # Create the Consumer instance
@@ -185,15 +185,20 @@ def create_DataIn_csv():
 
             # Iterate over each row and add the data to the list
             for row in csvreader:
-                # Create the body structure similar to your JSON
+                # Ensure streamID and dataSetkey are present
+                if 'StreamID' not in row or 'dataSetkey' not in row:
+                    return make_response(jsonify({'message': 'CSV must contain streamID and dataSetkey columns'}), 400)
+
+                streamID = row['StreamID']
+                dataSetkey = row['dataSetkey']
+
+                # Extract all other columns dynamically into "values"
+                values = {key: row[key] for key in row.keys() if key not in ['streamID', 'dataSetkey']}
+
                 body = {
-                    'values': {
-                        'time': row['time'],
-                        'StockID': row['StockID'],
-                        'price': row['price']
-                    },
-                    'streamID': row['StreamID'],
-                    'dataSetkey': row['dataSetkey']
+                    'values': values,
+                    'streamID': streamID,
+                    'dataSetkey': dataSetkey
                 }
                 
                 # Create the DataIn object
