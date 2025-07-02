@@ -140,10 +140,9 @@ def poll_db():
 
     # Set up triggers on each table
     insert_trigger(cursor, 'requests')
-    insert_trigger(cursor, 'datain')
     insert_trigger(cursor, 'estimations')
     update_trigger(cursor)
-    print("Triggers created on tables requests, datain, and estimations.")
+    print("Triggers created on tables requests, and estimations.")
 
     # Start listening for notifications
     cursor.execute("LISTEN my_channel;")
@@ -160,52 +159,67 @@ def poll_db():
                                     END;
                                 """
                 cursor.execute(update_refresh)
-                time.sleep(POLLING_INTERVAL)
-            else:
-                connection.poll()
-                while connection.notifies:
-                    notify = connection.notifies.pop(0)
-                    payload = json.loads(notify.payload)
-                    operation = payload.get("operation")
-                    row_data = payload["data"]
-                    table = payload["table"]
+                
+            time.sleep(POLLING_INTERVAL)            
+            connection.poll()
+            while connection.notifies:
+                notify = connection.notifies.pop(0)
+                payload = json.loads(notify.payload)
+                operation = payload.get("operation")
+                row_data = payload["data"]
+                table = payload["table"]
 
-                    print("--------------------------------------------------")
-                    print(f"Received notification from table {table}")
-                    print("--------------------------------------------------")
+                print("--------------------------------------------------")
+                print(f"Received notification from table {table}")
+                print("--------------------------------------------------")
 
-                    if operation == 'INSERT':
-                        print('This is an INSERT operation')
-                        if table == "requests" or table == "estimations":
-                            topic = REQ_TOPIC
-                        elif table == "datain":
-                            topic = DAT_TOPIC
-                        else:
-                            continue
-                    elif operation == 'UPDATE':
-                        print('This is an UPDATE operation')
-                        if row_data['toRefresh']:
-                            print('The estimation has expired, let me grab some fresh ones')
-                            topic = REQ_TOPIC
-                        else:
-                            old_data=f"""
-                                    SELECT data 
-                                    FROM estimations 
-                                    WHERE "synopsisUID" = {row_data['body']['uid']} 
-                                    """
-                            cursor.execute(old_data)
-                            result = cursor.fetchall()
-                            print("--------------------------------------------------")
-                            print('The old estimation is still fresh:')
-                            pprint(result)
-                            print("--------------------------------------------------")
-                            continue
-                    
-                    # Send the payload to Kafka
-                    send_to_kafka(topic, json.dumps(row_data['body']))
-                    print("--------------------------------------------------")
-                    print("Sent data to Kafka.")                
-                    print("--------------------------------------------------")
+                if operation == 'INSERT':
+                    print('This is an INSERT operation')
+                    if table == "estimations":
+                        est_id = row_data['id']  # ή 'synopsisUID' αν είναι το σωστό ID
+                        def mark_to_refresh(est_id=est_id):
+                            try:
+                                conn2 = psycopg2.connect(**POSTGRESQL_CONFIG)
+                                cur2 = conn2.cursor()
+                                cur2.execute(
+                                    f"""UPDATE estimations SET "toRefresh" = TRUE WHERE id = {est_id};"""
+                                )
+                                conn2.commit()
+                                cur2.close()
+                                conn2.close()
+                                print(f"[✓] Set toRefresh=True for estimation id={est_id}")
+                            except Exception as e:
+                                print(f"[✗] Error updating estimation: {e}")
+                        timer = threading.Timer(300, mark_to_refresh)
+                        timer.start()
+                    if table == "requests":
+                        topic = REQ_TOPIC
+                    else:
+                        continue
+                elif operation == 'UPDATE':
+                    print('This is an UPDATE operation')
+                    if row_data['toRefresh']:
+                        print('The estimation has expired, let me grab some fresh ones')
+                        topic = REQ_TOPIC
+                    else:
+                        old_estimation=f"""
+                                SELECT data 
+                                FROM estimations 
+                                WHERE "synopsisUID" = {row_data['body']['uid']} 
+                                """
+                        cursor.execute(old_estimation)
+                        result = cursor.fetchall()
+                        print("--------------------------------------------------")
+                        print('The old estimation is still fresh:')
+                        pprint(result)
+                        print("--------------------------------------------------")
+                        continue
+                
+                # Send the payload to Kafka
+                send_to_kafka(topic, json.dumps(row_data['body']))
+                print("--------------------------------------------------")
+                print("Sent data to Kafka.")                
+                print("--------------------------------------------------")
     finally:
         # Clean up
         cursor.close()

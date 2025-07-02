@@ -1,4 +1,6 @@
-flask
-psycopg2-binary
-Flask-SQLAlchemy
-confluent-kafka
+fastapi
+uvicorn
+sqlalchemy
+pydantic
+aiokafka
+# apscheduler

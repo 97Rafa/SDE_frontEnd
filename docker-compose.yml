@@ -1,95 +1,53 @@
 services:
-  flask_app:
-    container_name: flask_app
-    # image: 97raf/flask_live_app:1.0.0
-    build: 
-      context: .
-      dockerfile: Dockerfile 
+  fastapi:
+    build: .
     ports:
       - "4000:4000"
-    environment:
-      - DB_URL=postgresql://postgres:postgres@flask_db:5432/postgres
-      - KAFKA_BROKER=kafka:9093
-    depends_on:
-      - flask_db
-    networks:
-      my_network:
-        ipv4_address: 172.18.0.41
-
-  flask_db:
-    container_name: flask_db
-    image: postgres:12
-    ports:
-      - "5400:5432"
-    environment:
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_USER=postgres
-      - POSTGRES_DB=postgres
     volumes:
-      - pgdata:/var/lib/postgresql/data
-    networks:
-      my_network:
-        ipv4_address: 172.18.0.42
+      - .:/app
+
+  kafka:
+      image: bitnami/kafka:3.5
+      ports:
+        - "9092:9092"
+      expose:
+        - "9093"
+      environment:
+        KAFKA_ADVERTISED_LISTENERS: INSIDE://kafka:9093,OUTSIDE://localhost:9092
+        KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INSIDE:PLAINTEXT,OUTSIDE:PLAINTEXT
+        KAFKA_LISTENERS: INSIDE://0.0.0.0:9093,OUTSIDE://0.0.0.0:9092
+        KAFKA_INTER_BROKER_LISTENER_NAME: INSIDE
+        KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+        KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      depends_on:
+        - zookeeper
+        
+  topic-init:
+    image: bitnami/kafka:3.5
+    container_name: topic-init
+    depends_on:
+      - kafka
+    volumes:
+      - ./create_topics.sh:/create_topics.sh
+    entrypoint: ["bash", "-c", "sh create_topics.sh"]
 
   zookeeper:
-    image: confluentinc/cp-zookeeper:latest
-    container_name: zookeeper
+    image: bitnami/zookeeper:latest
     restart: always
     ports:
       - "2181:2181"
     environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-    networks:
-      my_network:
-        ipv4_address: 172.18.0.45
+      - ALLOW_ANONYMOUS_LOGIN=yes
 
-  kafka:
-    image: confluentinc/cp-kafka:latest
-    container_name: kafka
-    depends_on:
-      - zookeeper
-    ports:
-      - "9092:9092"
-    expose:
-      - "9093"
-    environment:
-      # KAFKA_BROKER_ID: 1
-      KAFKA_ADVERTISED_LISTENERS: INSIDE://kafka:9093,OUTSIDE://localhost:9092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INSIDE:PLAINTEXT,OUTSIDE:PLAINTEXT
-      KAFKA_LISTENERS: INSIDE://0.0.0.0:9093,OUTSIDE://0.0.0.0:9092
-      KAFKA_INTER_BROKER_LISTENER_NAME: INSIDE
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-    volumes:
-    - ./entrypoint.sh:/entrypoint.sh  # Mount script inside container
-    entrypoint: [ "sh", "-c", "echo 'Starting Kafka...' && /etc/confluent/docker/run & sleep 10 && /entrypoint.sh && wait" ]
-    command: ["sleep", "infinity"]
-    networks:
-      my_network:
-        ipv4_address: 172.18.0.44
-
-  kafbat-ui:
-    image: ghcr.io/kafbat/kafka-ui:latest
-    container_name: kafbat-ui
-    ports:
-      - "8080:8080"
-    environment:
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9093
-      KAFKA_CLUSTERS_0_NAME: "local"
-      KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL: "PLAINTEXT"
-    depends_on:
-      - kafka
-    networks:
-      my_network:
-        ipv4_address: 172.18.0.46
-
-
-volumes:
-  pgdata: {}
-
-networks:
-  my_network:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.18.0.0/16
+  
+  # kafbat-ui:
+  #   image: ghcr.io/kafbat/kafka-ui:latest
+  #   container_name: kafbat-ui
+  #   ports:
+  #     - "8080:8080"
+  #   environment:
+  #     KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9093
+  #     KAFKA_CLUSTERS_0_NAME: "local"
+  #     KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL: "PLAINTEXT"
+  #   depends_on:
+  #     - kafka
