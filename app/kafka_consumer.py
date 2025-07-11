@@ -1,25 +1,39 @@
-import asyncio
+import asyncio, json
 from aiokafka import AIOKafkaConsumer
-import json
 
-KAFKA_BOOTSTRAP_SERVERS = "kafka:9093"
+KAFKA_BROKER= 'kafka:9093'
+CONS_TIMEOUT = 1000
 
-async def consume():
+async def consume(topic):
     consumer = AIOKafkaConsumer(
-        "topic1",
-        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
-        group_id="my-group",
-        value_deserializer=lambda x: json.loads(x.decode("utf-8"))
+        topic,
+        bootstrap_servers=KAFKA_BROKER,
+        auto_offset_reset="earliest",
+        enable_auto_commit=True,   
+        group_id="sde_client_group",
+        value_deserializer=lambda m: json.loads(m.decode("utf-8"))
     )
+
     await consumer.start()
-    print("Kafka consumer started...")
     try:
-        async for msg in consumer:
-            print("\n📥 Νέο μήνυμα:")
-            print(json.dumps(msg.value, indent=2))
+        print(f"Consuming from topic '{topic}'...")
+        topic_msgs = []
+
+        while True:
+            result = await consumer.getmany(timeout_ms=CONS_TIMEOUT)
+
+            if result:
+                for tp, messages in result.items():
+                    for msg in messages:
+                        # print(f"Received: {msg.value.decode('utf-8')}")
+                        topic_msgs.append(msg.value)
+            else:
+                break
     finally:
         await consumer.stop()
+        print("Consumer stopped.")
+    return topic_msgs
 
-# Εκκίνηση αν τρέχεις standalone
-if __name__ == "__main__":
-    asyncio.run(consume())
+if __name__ == '__main__':
+    data = asyncio.run(consume('request_topic'))
+    print(data)

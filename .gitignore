@@ -1,3 +1,4 @@
 .kafka-venv
 Makefile
 myDB.py
+SDE.db

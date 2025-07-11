@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, Text
+from sqlalchemy import Column, Integer, String, DateTime, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.types import TypeDecorator, TEXT
 import json
@@ -24,31 +24,34 @@ class RequestM(Base):
     synopsisID = Column(Integer, nullable=False)
     requestID = Column(Integer, nullable=False)
     dataSetkey = Column(String(30), nullable=False)
-    param = Column(Text)
+    param = Column(String)
     noOfP = Column(Integer, nullable=False)
 
     def get_param(self):
-        return json.loads(self.param) if self.param else []
+        if not self.param:
+            return []
+        try:
+            return json.loads(self.param)
+        except (json.JSONDecodeError, TypeError):
+            return []
 
     def set_param(self, value):
         self.param = json.dumps(value)
 
     def toJson(self):
-        return {'uid': self.uid, 'status': self.status, 'streamID': self.streamID, 'synopsisID': self.synopsisID,
-                'requestID': self.requestID, 'dataSetkey': self.dataSetkey, 'param': self.param, 'noOfP': self.noOfP}
+        return {'uid': self.uid, 'streamID': self.streamID, 'synopsisID': self.synopsisID,
+                'requestID': self.requestID, 'dataSetkey': self.dataSetkey, 'param': self.get_param(), 'noOfP': self.noOfP}
 
 class EstimationM(Base):
     __tablename__ = 'estimations'
-
-    id = Column(Integer, primary_key=True)
-    synopsisUID = Column(Integer, nullable=False, unique=True)
+    uid = Column(Integer, primary_key=True, nullable=False, unique=True)
     age = Column(Integer, nullable=False)
-    body = Column(JsonType, nullable=False)
+    body = Column(JsonType, nullable=True)
     fetchedEst = Column(JsonType, nullable=True)
     last_req = Column(DateTime(timezone=True), nullable=True)
     last_data = Column(DateTime(timezone=True), nullable=True)
     toRefresh = Column(Boolean, nullable=False, default=False)
 
     def toJson(self):
-        return {'id': self.id, 'synopsisID': self.synopsisID, 
-                'body': self.body, 'last_req': self.last_req, 'last_data': self.last_data, 'toRefresh': self.toRefresh}
+        return {'uid': self.uid, 'age': self.age,
+                'body': self.body, 'fetchedEst': self.fetchedEst, 'last_req': self.last_req, 'last_data': self.last_data, 'toRefresh': self.toRefresh}

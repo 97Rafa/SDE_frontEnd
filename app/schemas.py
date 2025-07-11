@@ -14,14 +14,19 @@ class RequestRead(BaseModel):
     body: Request
 
 class DataIn(BaseModel):
-    values: Dict[str, Any]
-    streamID: str
-    dataSetkey: str
+    values: Dict[str, Any] = Field(..., description="Values to be inserted in the Synopsis")
+    streamID: str = Field(..., description="The name of the stream where the request will be asked")
+    dataSetkey: str = Field(..., description="Hash Value")
 
 class Estimation(BaseModel):
-    synopsisUID : int = None
-    age : timedelta
-    body : RequestRead
+    uid : int = Field(description="Unique ID of the Estimation")
+    age: timedelta = Field(default="00:01", description="How fresh the estimation will be")
+    streamID: str = Field(..., description="The name of the stream where the request will be asked")
+    synopsisID: int = Field(...,ge=1, le=31, description="Synopsis type(e.g. 1=CountMin, 2=BloomFilter,...)")
+    dataSetkey: str = Field(..., description="Hash Value")
+    requestID: Optional[Literal[3,6]] = Field(default=3, description="Estimation Type(Default=3)")
+    param: List[str] = Field(default_factory=list, description="Parameters of the request")
+    noOfP: Optional[int] = Field(default=4, description="Job parallelism")
 
     @field_validator('age', mode='before')
     def validate_duration(cls, value):
