@@ -1,18 +1,15 @@
 from fastapi import FastAPI, Depends, HTTPException
-# from fastapi.exceptions import RequestValidationError
-# from fastapi.responses import JSONResponse
-
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
-from app.schemas import Request, DataIn, Estimation
-from app.models import RequestM, EstimationM
+from app.schemas import RequestBase, AddRequest, DataIn, Estimation, SYNOPSIS_ID_PARAM
+from app.models import EstimationM
 from . import database
-from app.kafka_producer import produce, serializer
+from app.kafka_producer import produce
 from app.kafka_consumer import consume
 from datetime import datetime
-# from app.monitor import start_monitoring_task
 from contextlib import asynccontextmanager
-import json
+from enum import Enum
+import random
 
 
 # Initialize DB tables
@@ -22,6 +19,7 @@ REQ_TOP='request_topic'
 DAT_TOP='data_topic'
 EST_TOP='estimation_topic'
 LOG_TOP='logging_topic'
+PARALELISM=4
 
 TOPICS = {REQ_TOP, DAT_TOP, EST_TOP, LOG_TOP}
 
@@ -97,65 +95,95 @@ async def get_messages(topic: str):
 @app.post("/DataIn/", tags=["DataIn"])
 async def produce_message(data: DataIn):
     json_data = data.model_dump()
-    await produce('data_topic', json_data)
+    await produce(DAT_TOP, json_data)
     return {"status": "Sent Data", "data": json_data}
     
 @app.get("/DataIn/", tags=["DataIn"])
 async def get_messages():
-    data = await consume('data_topic')
+    data = await consume(DAT_TOP)
     return {"Data in Kafka": data}
-
-
 #######################
 
 
 ###### REQUESTS #######
 @app.post("/requests/add", tags=["AddSynopsis"])
-def create_addrequest(req: Request, db: Session = Depends(get_db)):
-    if req.noOfP is not None:
-        paral = req.noOfP
-    else:
-        paral = 4
-    db_request = RequestM(streamID = req.streamID,
-                            synopsisID = req.synopsisID,
-                            requestID = 1,
-                            dataSetkey = req.dataSetkey,
-                            noOfP= paral)
+async def create_addrequest(request: AddRequest):
+    synopsis_id = request.synopsisID
+    param_list = request.param
+    request.requestID = 1
+
+    if synopsis_id not in SYNOPSIS_ID_PARAM:
+        raise HTTPException(status_code=400, detail="Invalid synopsisID")
+    # matches synopsisID with the expected parameters
+    schema = SYNOPSIS_ID_PARAM[synopsis_id].value
+
+    if len(param_list) != len(schema):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Expected {len(schema)} parameters: {list(schema.keys())}"
+        )
+
+    # Validate params depending on synopsisID
+    for (name, expected_type), value in zip(schema.items(), param_list):
+        try:
+            if isinstance(expected_type, type) and issubclass(expected_type, Enum):
+                expected_type(value)
+            else:
+                expected_type(value)
+        except Exception as e:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid value for '{name}': expected {expected_type.__name__}, got '{value}'"
+            )
     
-    # Parse param List into the DB
-    db_request.set_param(req.param)
-    db.add(db_request)
-    db.commit()
-    db.refresh(db_request)
-    return {"Sent to request_topic":db_request.toJson()}
+    json_request = request.model_dump()
+    await produce(REQ_TOP, json_request)
+    return {"status": "Sent Request", "data": json_request}
+    
 
 @app.post("/requests/delete", tags=["DeleteSynopsis"])
-def create_delrequest(req: Request, db: Session = Depends(get_db)):
-    if req.noOfP is not None:
-        paral = req.noOfP
-    else:
-        paral = 4
-    db_request = RequestM(streamID = req.streamID,
-                            synopsisID = req.synopsisID,
-                            requestID = 2,
-                            dataSetkey = req.dataSetkey,
-                            noOfP= paral)
-    
-    # Parse param List into the DB
-    db_request.set_param(req.param)
-    db.add(db_request)
-    db.commit()
-    db.refresh(db_request)
-    return {"Sent to request_topic":db_request.toJson()}
-
-@app.post("/requests/update", tags=["UpdateSynopsis"])
-def create_updateRequest():
-    return {"Oopsie": "not Implemented"}
+async def create_delrequest(request: RequestBase):
+    request.requestID = 2    
+    json_request = request.model_dump()
+    await produce(REQ_TOP, json_request)
+    return {"status": "Sent Request", "data": json_request}
 
 
-@app.get("/requests/",tags=["Requests"])
-def read_requests(db: Session = Depends(get_db)):
-    return db.query(RequestM).all()
+@app.post("/requests/createSnapshot", tags=["CreateSnapshot"])
+async def create_delrequest(request: RequestBase):
+    request.requestID = 100    
+    json_request = request.model_dump()
+    await produce(REQ_TOP, json_request)
+    return {"status": "Sent Request", "data": json_request}
+
+@app.post("/requests/listSnapshots", tags=["ListSnapshots"])
+async def create_delrequest(request: RequestBase):
+    request.requestID = 301    
+    json_request = request.model_dump()
+    await produce(REQ_TOP, json_request)
+    return {"status": "Sent Request", "data": json_request}
+
+@app.post("/requests/loadLatest", tags=["LoadLatest"])
+async def create_delrequest(request: RequestBase):
+    request.requestID = 200    
+    json_request = request.model_dump()
+    await produce(REQ_TOP, json_request)
+    return {"status": "Sent Request", "data": json_request}
+
+@app.post("/requests/loadCustom", tags=["LoadCustom"])
+async def create_delrequest(request: RequestBase):
+    request.requestID = 201    
+    json_request = request.model_dump()
+    await produce(REQ_TOP, json_request)
+    return {"status": "Sent Request", "data": json_request}
+
+@app.post("/requests/createFromSnap", tags=["CreateFromSnap"])
+async def create_delrequest(request: AddRequest,version_number: int = 0, new_uid: int = random.randint(90000, 100000)):
+    request.requestID = 202 
+    request.param = [version_number, new_uid]
+    json_request = request.model_dump()
+    await produce(REQ_TOP, json_request)
+    return {"status": "Sent Request", "data": json_request}
 #######################
 
 #### ESTIMATIONS ########

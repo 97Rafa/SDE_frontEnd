@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Boolean
+from sqlalchemy import Column, Integer, DateTime, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.types import TypeDecorator, TEXT
 import json
@@ -16,31 +16,31 @@ class JsonType(TypeDecorator):
     def process_result_value(self, value, dialect):
         return json.loads(value) if value is not None else None
 
-class RequestM(Base):
-    __tablename__ = 'requests'
+# class RequestM(Base):
+#     __tablename__ = 'requests'
 
-    uid = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    streamID = Column(String(30), nullable=False)
-    synopsisID = Column(Integer, nullable=False)
-    requestID = Column(Integer, nullable=False)
-    dataSetkey = Column(String(30), nullable=False)
-    param = Column(String)
-    noOfP = Column(Integer, nullable=False)
+#     uid = Column(Integer, primary_key=True, index=True, autoincrement=True)
+#     streamID = Column(String(30), nullable=False)
+#     synopsisID = Column(Integer, nullable=False)
+#     requestID = Column(Integer, nullable=False)
+#     dataSetkey = Column(String(30), nullable=False)
+#     param = Column(String)
+#     noOfP = Column(Integer, nullable=False)
 
-    def get_param(self):
-        if not self.param:
-            return []
-        try:
-            return json.loads(self.param)
-        except (json.JSONDecodeError, TypeError):
-            return []
+#     def get_param(self):
+#         if not self.param:
+#             return []
+#         try:
+#             return json.loads(self.param)
+#         except (json.JSONDecodeError, TypeError):
+#             return []
 
-    def set_param(self, value):
-        self.param = json.dumps(value)
+#     def set_param(self, value):
+#         self.param = json.dumps(value)
 
-    def toJson(self):
-        return {'uid': self.uid, 'streamID': self.streamID, 'synopsisID': self.synopsisID,
-                'requestID': self.requestID, 'dataSetkey': self.dataSetkey, 'param': self.get_param(), 'noOfP': self.noOfP}
+#     def toJson(self):
+#         return {'uid': self.uid, 'streamID': self.streamID, 'synopsisID': self.synopsisID,
+#                 'requestID': self.requestID, 'dataSetkey': self.dataSetkey, 'param': self.get_param(), 'noOfP': self.noOfP}
 
 class EstimationM(Base):
     __tablename__ = 'estimations'
