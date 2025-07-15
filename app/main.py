@@ -4,12 +4,14 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.schemas import RequestBase, AddRequest, DataIn, Estimation, SYNOPSIS_ID_PARAM
 from app.models import EstimationM
 from . import database
-from app.kafka_producer import produce
+from app.kafka_producer import produce, producer
 from app.kafka_consumer import consume
 from datetime import datetime
 from contextlib import asynccontextmanager
 from enum import Enum
-import random
+from aiokafka import AIOKafkaConsumer
+import random, asyncio, json
+
 
 
 # Initialize DB tables
@@ -20,6 +22,7 @@ DAT_TOP='data_topic'
 EST_TOP='estimation_topic'
 LOG_TOP='logging_topic'
 PARALELISM=4
+KAFKA_BROKER= 'kafka:9093'
 
 TOPICS = {REQ_TOP, DAT_TOP, EST_TOP, LOG_TOP}
 
@@ -105,6 +108,39 @@ async def get_messages():
 #######################
 
 
+# It consumes the logger topic after a request is sent to SDE to find a response 
+async def wait_for_response(externalUID: str, timeout: int = 10):
+    deadline = asyncio.get_event_loop().time() + timeout
+
+    consumer = AIOKafkaConsumer(
+        LOG_TOP,
+        bootstrap_servers=KAFKA_BROKER,
+        auto_offset_reset="latest",
+        enable_auto_commit=True,
+        group_id="sde_client_group"
+    )
+
+    await consumer.start()
+
+    try:
+        while asyncio.get_event_loop().time() < deadline:
+            try:
+                msg = await asyncio.wait_for(consumer.getone(), timeout=1)
+                value = json.loads(msg.value.decode())
+                # ExternalUID is used to find the correct request response
+                if value.get("relatedRequestIdentifier") == externalUID:
+                    return {
+                        "timestamp": value.get("timestamp"),
+                        "requestTypeID": value.get("requestTypeID"),
+                        "content": value.get("content")
+                    }
+            except asyncio.TimeoutError:
+                continue
+    finally:
+        await consumer.stop()
+
+    raise asyncio.TimeoutError("No matching response found")
+
 ###### REQUESTS #######
 @app.post("/requests/add", tags=["AddSynopsis"])
 async def create_addrequest(request: AddRequest):
@@ -138,7 +174,13 @@ async def create_addrequest(request: AddRequest):
     
     json_request = request.model_dump()
     await produce(REQ_TOP, json_request)
-    return {"status": "Sent Request", "data": json_request}
+    # Wait for matching response
+    try:
+        response = await wait_for_response(request.externalUID, timeout=5)
+        return {"response": response}
+    except asyncio.TimeoutError:
+        return {"error": "Timeout waiting for response"}
+
     
 
 @app.post("/requests/delete", tags=["DeleteSynopsis"])
@@ -146,44 +188,74 @@ async def create_delrequest(request: RequestBase):
     request.requestID = 2    
     json_request = request.model_dump()
     await produce(REQ_TOP, json_request)
-    return {"status": "Sent Request", "data": json_request}
+    # Wait for matching response
+    try:
+        response = await wait_for_response(request.externalUID, timeout=5)
+        return {"response": response}
+    except asyncio.TimeoutError:
+        return {"error": "Timeout waiting for response"}
 
 
 @app.post("/requests/createSnapshot", tags=["CreateSnapshot"])
-async def create_delrequest(request: RequestBase):
+async def create_snapshot(request: RequestBase):
     request.requestID = 100    
     json_request = request.model_dump()
     await produce(REQ_TOP, json_request)
-    return {"status": "Sent Request", "data": json_request}
+    # Wait for matching response
+    try:
+        response = await wait_for_response(request.externalUID, timeout=5)
+        return {"response": response}
+    except asyncio.TimeoutError:
+        return {"error": "Timeout waiting for response"}
 
 @app.post("/requests/listSnapshots", tags=["ListSnapshots"])
-async def create_delrequest(request: RequestBase):
+async def list_snapshots(request: RequestBase):
     request.requestID = 301    
     json_request = request.model_dump()
     await produce(REQ_TOP, json_request)
-    return {"status": "Sent Request", "data": json_request}
+    # Wait for matching response
+    try:
+        response = await wait_for_response(request.externalUID, timeout=5)
+        return {"response": response}
+    except asyncio.TimeoutError:
+        return {"error": "Timeout waiting for response"}
 
 @app.post("/requests/loadLatest", tags=["LoadLatest"])
-async def create_delrequest(request: RequestBase):
+async def load_latest(request: RequestBase):
     request.requestID = 200    
     json_request = request.model_dump()
     await produce(REQ_TOP, json_request)
-    return {"status": "Sent Request", "data": json_request}
+    # Wait for matching response
+    try:
+        response = await wait_for_response(request.externalUID, timeout=5)
+        return {"response": response}
+    except asyncio.TimeoutError:
+        return {"error": "Timeout waiting for response"}
 
 @app.post("/requests/loadCustom", tags=["LoadCustom"])
-async def create_delrequest(request: RequestBase):
+async def load_custom(request: RequestBase):
     request.requestID = 201    
     json_request = request.model_dump()
     await produce(REQ_TOP, json_request)
-    return {"status": "Sent Request", "data": json_request}
+    # Wait for matching response
+    try:
+        response = await wait_for_response(request.externalUID, timeout=5)
+        return {"response": response}
+    except asyncio.TimeoutError:
+        return {"error": "Timeout waiting for response"}
 
 @app.post("/requests/createFromSnap", tags=["CreateFromSnap"])
-async def create_delrequest(request: AddRequest,version_number: int = 0, new_uid: int = random.randint(90000, 100000)):
+async def create_fromSnap(request: AddRequest,version_number: int = 0, new_uid: int = random.randint(90000, 100000)):
     request.requestID = 202 
     request.param = [version_number, new_uid]
     json_request = request.model_dump()
     await produce(REQ_TOP, json_request)
-    return {"status": "Sent Request", "data": json_request}
+    # Wait for matching response
+    try:
+        response = await wait_for_response(request.externalUID, timeout=5)
+        return {"response": response}
+    except asyncio.TimeoutError:
+        return {"error": "Timeout waiting for response"}
 #######################
 
 #### ESTIMATIONS ########
