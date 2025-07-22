@@ -1,31 +1,30 @@
-import asyncio, json
+import asyncio, json, time
 from aiokafka import AIOKafkaConsumer
 
 KAFKA_BROKER= 'kafka:9093'
-CONS_TIMEOUT = 1000
+CONS_TIMEOUT=1000
 
-async def consume(topic):
+async def consume(topic, max_duration=5):
     consumer = AIOKafkaConsumer(
         topic,
         bootstrap_servers=KAFKA_BROKER,
         auto_offset_reset="earliest",
-        enable_auto_commit=True,   
-        group_id="sde_client_group",
+        enable_auto_commit=False,   
+        group_id=None,  # Important: no committed offsets
         value_deserializer=lambda m: json.loads(m.decode("utf-8"))
     )
 
     await consumer.start()
     try:
-        print(f"Consuming from topic '{topic}'...")
         topic_msgs = []
+        deadline = time.time() + max_duration
 
-        while True:
+        while time.time() < deadline:
             result = await consumer.getmany(timeout_ms=CONS_TIMEOUT)
 
             if result:
                 for tp, messages in result.items():
                     for msg in messages:
-                        # print(f"Received: {msg.value.decode('utf-8')}")
                         topic_msgs.append(msg.value)
             else:
                 break

@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
-from app.schemas import RequestBase, AddRequest, DataIn, Estimation, SYNOPSIS_ID_PARAM
+from app.schemas import RequestBase, AddRequest,DelRequest, DataIn, EstRequest, SYNOPSIS_ID_PARAM
 from app.models import EstimationM
 from . import database
 from app.kafka_producer import produce, producer
@@ -9,8 +9,9 @@ from app.kafka_consumer import consume
 from datetime import datetime
 from contextlib import asynccontextmanager
 from enum import Enum
-from aiokafka import AIOKafkaConsumer
+# from aiokafka import AIOKafkaConsumer
 import random, asyncio, json
+from asyncio import TimeoutError as AsyncTimeoutError
 
 
 
@@ -32,16 +33,36 @@ tags_metadata = [
         "description": "Add new Data in a Synopsis. It sends it through Kafka directly to SDE",
     },
     {
-        "name": "Requests",
-        "description": "Get all the requests from the db"
-    },
-    {
         "name": "AddSynopsis",
         "description": "Add a new Synopsis in SDE"
     },
     {
-        "name": "estimations",
+        "name": "Estimations",
         "description": "Ask SDE for an Estimation of a specific Synopse"
+    },
+    {
+        "name": "DeleteSynopsis",
+        "description": "Delete a Synopsis in SDE(Req ID = 2)"
+    },
+    {
+        "name": "CreateSnapshot",
+        "description": "Create a Synopsis Snapshot in SDE(Req ID = 100)"
+    },
+    {
+        "name": "ListSnapshots",
+        "description": "List Synopsis Snapshots the system(Req ID = 301)"
+    },
+    {
+        "name": "LoadLatest",
+        "description": "Load the latest Snapshot of a specific Synopsis(Req ID = 200)"
+    },
+    {
+        "name": "LoadCustom",
+        "description": "Load a specific Snapshot of a specific Synopsis(Req ID = 201)"
+    },
+    {
+        "name": "CreateFromSnap",
+        "description": "Create a Synopsis from Snapshot in the system(Req ID = 202)"
     },
     {
         "name": "Kafka Direct",
@@ -74,11 +95,7 @@ app = FastAPI(openapi_tags=tags_metadata,
                 version="0.0.1")
 
 
-#############
-# Endpoints #
-#############
 
-###### KAFKA ###########
 @app.post("/produce/{topic}", tags=["Kafka Direct"])
 async def produce_message(topic: str, msg: dict):
     if topic not in TOPICS:
@@ -92,56 +109,39 @@ async def get_messages(topic: str):
         raise HTTPException(status_code=400, detail="Invalid topic")
     data = await consume(topic)
     return {"topic": topic, "messages": data}
-#######################
 
-###### DATA ###########
-@app.post("/DataIn/", tags=["DataIn"])
+@app.post("/dataIn/", tags=["DataIn"])
 async def produce_message(data: DataIn):
     json_data = data.model_dump()
     await produce(DAT_TOP, json_data)
     return {"status": "Sent Data", "data": json_data}
     
-@app.get("/DataIn/", tags=["DataIn"])
+@app.get("/dataIn/", tags=["DataIn"])
 async def get_messages():
     data = await consume(DAT_TOP)
     return {"Data in Kafka": data}
-#######################
+
 
 
 # It consumes the logger topic after a request is sent to SDE to find a response 
-async def wait_for_response(externalUID: str, timeout: int = 10):
-    deadline = asyncio.get_event_loop().time() + timeout
-
-    consumer = AIOKafkaConsumer(
-        LOG_TOP,
-        bootstrap_servers=KAFKA_BROKER,
-        auto_offset_reset="latest",
-        enable_auto_commit=True,
-        group_id="sde_client_group"
-    )
-
-    await consumer.start()
-
+async def wait_for_response(externalUID: str, timeout: int = 5):
     try:
-        while asyncio.get_event_loop().time() < deadline:
-            try:
-                msg = await asyncio.wait_for(consumer.getone(), timeout=1)
-                value = json.loads(msg.value.decode())
-                # ExternalUID is used to find the correct request response
-                if value.get("relatedRequestIdentifier") == externalUID:
-                    return {
-                        "timestamp": value.get("timestamp"),
-                        "requestTypeID": value.get("requestTypeID"),
-                        "content": value.get("content")
-                    }
-            except asyncio.TimeoutError:
-                continue
-    finally:
-        await consumer.stop()
+        log_msgs = await asyncio.wait_for(consume(LOG_TOP), timeout)
+    except AsyncTimeoutError:
+        raise HTTPException(status_code=504, detail="Timeout waiting for Kafka response")
 
-    raise asyncio.TimeoutError("No matching response found")
+    for value in log_msgs:
+        if value.get("relatedRequestIdentifier") == externalUID:
+            return {
+                "externalUID": value.get("relatedRequestIdentifier"),
+                "timestamp": value.get("timestamp"),
+                "requestTypeID": value.get("requestTypeID"),
+                "content": value.get("content")
+            }
 
-###### REQUESTS #######
+    raise HTTPException(status_code=404, detail="Matching response not found")
+
+
 @app.post("/requests/add", tags=["AddSynopsis"])
 async def create_addrequest(request: AddRequest):
     synopsis_id = request.synopsisID
@@ -184,7 +184,7 @@ async def create_addrequest(request: AddRequest):
     
 
 @app.post("/requests/delete", tags=["DeleteSynopsis"])
-async def create_delrequest(request: RequestBase):
+async def create_delrequest(request: DelRequest):
     request.requestID = 2    
     json_request = request.model_dump()
     await produce(REQ_TOP, json_request)
@@ -256,11 +256,9 @@ async def create_fromSnap(request: AddRequest,version_number: int = 0, new_uid: 
         return {"response": response}
     except asyncio.TimeoutError:
         return {"error": "Timeout waiting for response"}
-#######################
 
-#### ESTIMATIONS ########
-@app.post("/estimations/", tags=["estimations"])
-def create_estimation(est: Estimation, db: Session = Depends(get_db)):
+@app.post("/estimations/", tags=["Estimations"])
+def create_estimation(est: EstRequest, db: Session = Depends(get_db)):
     #timestamp for last_req
     now = datetime.now()
     age_sec = int(est.age.total_seconds())
@@ -295,7 +293,6 @@ def create_estimation(est: Estimation, db: Session = Depends(get_db)):
     
 
 
-@app.get("/estimations/", tags=["estimations"])
+@app.get("/estimations/", tags=["Estimations"])
 def read_estimations(db: Session = Depends(get_db)):
     return db.query(EstimationM).all()
-#######################
