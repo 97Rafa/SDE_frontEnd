@@ -2,9 +2,9 @@ from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 from app.schemas import RequestBase, AddRequest,DelRequest, DataIn, EstRequest, SYNOPSIS_ID_PARAM
-from app.models import EstimationM
+from app.models import EstimationM, get_expiration
 from . import database
-from app.kafka_producer import produce, producer
+from app.kafka_producer import produce
 from app.kafka_consumer import consume
 from datetime import datetime
 from contextlib import asynccontextmanager
@@ -256,14 +256,35 @@ async def create_fromSnap(request: AddRequest,version_number: int = 0, new_uid: 
         return {"response": response}
     except asyncio.TimeoutError:
         return {"error": "Timeout waiting for response"}
+    
+
+#It waits for Kafka estimation topic to give an estimation to the corresponding synopsis
+async def wait_for_estimation(uid: int, timeout: int = 5):
+    try:
+        est_msgs = await asyncio.wait_for(consume(EST_TOP), timeout)
+    except AsyncTimeoutError:
+        raise HTTPException(status_code=504, detail="Timeout waiting for Kafka response")
+
+    for value in est_msgs:
+        if value.get("uid") == uid:
+            return {
+	            "uid": value.get("uid"),
+                "synopsisID": value.get("synopsisID"),
+	            "param": value.get("param"),
+                "estimation": value.get("estimation")
+            }
+
+    raise HTTPException(status_code=404, detail="Matching estimation not found")
+
 
 @app.post("/estimations/", tags=["Estimations"])
-def create_estimation(est: EstRequest, db: Session = Depends(get_db)):
+async def create_estimation(request: EstRequest, db: Session = Depends(get_db)):
+    request.requestID = 3
     #timestamp for last_req
     now = datetime.now()
-    age_sec = int(est.age.total_seconds())
-    req_body = est.model_dump_json(include={"uid","streamID", "synopsisID","dataSetKey", "param", "requestID", "noOfP"})
-    sUID=est.uid
+    age_sec = int(request.age.total_seconds())
+    req_body = request.model_dump(include={"uid","streamID", "synopsisID","dataSetkey", "param", "requestID", "noOfP"})
+    sUID=request.uid
    
     try:
         existing = db.query(EstimationM).filter(EstimationM.uid == sUID).first()
@@ -272,21 +293,37 @@ def create_estimation(est: EstRequest, db: Session = Depends(get_db)):
             # update existing request
             existing.last_req = now
             existing.age = age_sec
+            # if abs(now - existing.last_data) >= age_sec:
+            #     toRefresh = True
+            # else:
+            #     toRefresh = False
+
+
             db.commit()
             db.refresh(existing)
-            return {"status": "Estimation updated", "payload": existing}
+            return {"status": "Estimation updated", "Estimation": existing.fetchedEst}
         else:
-            # add new estimation request
-            db_estimation = EstimationM(
-                uid=sUID,
-                body=req_body,
-                age=age_sec,
-                last_req=now
-            )
-            db.add(db_estimation)
-            db.commit()
-            db.refresh(db_estimation)
-            return {"status": "Estimation created", "payload": db_estimation.toJson()}
+            try:
+                await produce(REQ_TOP, req_body) #send request to Kafka
+                # Wait for matching estimation
+                estimation = await wait_for_estimation(request.uid, timeout=5)
+                # add new estimation request on DB
+                db_estimation = EstimationM(
+                    uid=sUID,
+                    body=req_body,
+                    data_expiration=get_expiration(age_sec),
+                    last_req=now,
+                    last_data=now,
+                    fetchedEst=estimation
+                )
+                db.add(db_estimation)
+                db.commit()
+                db.refresh(db_estimation)
+
+                return {"status": "Estimation request created", "Estimation": estimation}
+            except asyncio.TimeoutError:
+                return {"error": "Timeout waiting for estimation"}
+
     except SQLAlchemyError as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))

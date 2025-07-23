@@ -67,6 +67,7 @@ class DelRequest(RequestBase):
     uid: int = Field(description="4-digit ID")
 
 class EstRequest(RequestBase):
+    uid: int = Field(description="4-digit ID")
     param: List[str] = Field(default_factory=list, description="Parameters of the request")
     age: timedelta = Field(default="00:01", description="How fresh the estimation will be")
 
