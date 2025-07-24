@@ -23,7 +23,6 @@ def get_expiration(minutes: int = 1) -> datetime:
 class EstimationM(Base):
     __tablename__ = 'estimations'
     uid = Column(Integer, primary_key=True, nullable=False, unique=True)
-    data_expiration = Column(DateTime(timezone=True), nullable=True, default= get_expiration)
     body = Column(JsonType, nullable=True)
     fetchedEst = Column(JsonType, nullable=True)
     last_req = Column(DateTime(timezone=True), nullable=True)

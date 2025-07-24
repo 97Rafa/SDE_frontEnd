@@ -6,7 +6,7 @@ from app.models import EstimationM, get_expiration
 from . import database
 from app.kafka_producer import produce
 from app.kafka_consumer import consume
-from datetime import datetime
+from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 from enum import Enum
 # from aiokafka import AIOKafkaConsumer
@@ -26,6 +26,9 @@ PARALELISM=4
 KAFKA_BROKER= 'kafka:9093'
 
 TOPICS = {REQ_TOP, DAT_TOP, EST_TOP, LOG_TOP}
+
+RESPONSE_TIMEOUT = 5
+ESTIMATION_TIMEOUT = 5
 
 tags_metadata = [
     {
@@ -124,7 +127,8 @@ async def get_messages():
 
 
 # It consumes the logger topic after a request is sent to SDE to find a response 
-async def wait_for_response(externalUID: str, timeout: int = 5):
+async def wait_for_response(externalUID: str):
+    timeout = RESPONSE_TIMEOUT
     try:
         log_msgs = await asyncio.wait_for(consume(LOG_TOP), timeout)
     except AsyncTimeoutError:
@@ -176,7 +180,7 @@ async def create_addrequest(request: AddRequest):
     await produce(REQ_TOP, json_request)
     # Wait for matching response
     try:
-        response = await wait_for_response(request.externalUID, timeout=5)
+        response = await wait_for_response(request.externalUID)
         return {"response": response}
     except asyncio.TimeoutError:
         return {"error": "Timeout waiting for response"}
@@ -190,7 +194,7 @@ async def create_delrequest(request: DelRequest):
     await produce(REQ_TOP, json_request)
     # Wait for matching response
     try:
-        response = await wait_for_response(request.externalUID, timeout=5)
+        response = await wait_for_response(request.externalUID)
         return {"response": response}
     except asyncio.TimeoutError:
         return {"error": "Timeout waiting for response"}
@@ -203,7 +207,7 @@ async def create_snapshot(request: RequestBase):
     await produce(REQ_TOP, json_request)
     # Wait for matching response
     try:
-        response = await wait_for_response(request.externalUID, timeout=5)
+        response = await wait_for_response(request.externalUID)
         return {"response": response}
     except asyncio.TimeoutError:
         return {"error": "Timeout waiting for response"}
@@ -215,7 +219,7 @@ async def list_snapshots(request: RequestBase):
     await produce(REQ_TOP, json_request)
     # Wait for matching response
     try:
-        response = await wait_for_response(request.externalUID, timeout=5)
+        response = await wait_for_response(request.externalUID)
         return {"response": response}
     except asyncio.TimeoutError:
         return {"error": "Timeout waiting for response"}
@@ -227,7 +231,7 @@ async def load_latest(request: RequestBase):
     await produce(REQ_TOP, json_request)
     # Wait for matching response
     try:
-        response = await wait_for_response(request.externalUID, timeout=5)
+        response = await wait_for_response(request.externalUID)
         return {"response": response}
     except asyncio.TimeoutError:
         return {"error": "Timeout waiting for response"}
@@ -239,7 +243,7 @@ async def load_custom(request: RequestBase):
     await produce(REQ_TOP, json_request)
     # Wait for matching response
     try:
-        response = await wait_for_response(request.externalUID, timeout=5)
+        response = await wait_for_response(request.externalUID)
         return {"response": response}
     except asyncio.TimeoutError:
         return {"error": "Timeout waiting for response"}
@@ -252,14 +256,15 @@ async def create_fromSnap(request: AddRequest,version_number: int = 0, new_uid: 
     await produce(REQ_TOP, json_request)
     # Wait for matching response
     try:
-        response = await wait_for_response(request.externalUID, timeout=5)
+        response = await wait_for_response(request.externalUID)
         return {"response": response}
     except asyncio.TimeoutError:
         return {"error": "Timeout waiting for response"}
     
 
 #It waits for Kafka estimation topic to give an estimation to the corresponding synopsis
-async def wait_for_estimation(uid: int, timeout: int = 5):
+async def wait_for_estimation(uid: int):
+    timeout = ESTIMATION_TIMEOUT
     try:
         est_msgs = await asyncio.wait_for(consume(EST_TOP), timeout)
     except AsyncTimeoutError:
@@ -276,42 +281,59 @@ async def wait_for_estimation(uid: int, timeout: int = 5):
 
     raise HTTPException(status_code=404, detail="Matching estimation not found")
 
+# It compares the time that has passed since the last data where added on the table
+# with the max age of the estimation the request specifies. If max age is longer
+# the old estimation from the table can still be used
+def should_use_cached(estimation: EstimationM, max_age_minutes: int) -> bool:
+    if estimation.last_data is None:
+        return False
+    return datetime.now() - estimation.last_data < timedelta(minutes=max_age_minutes)
+
 
 @app.post("/estimations/", tags=["Estimations"])
 async def create_estimation(request: EstRequest, db: Session = Depends(get_db)):
     request.requestID = 3
     #timestamp for last_req
     now = datetime.now()
-    age_sec = int(request.age.total_seconds())
     req_body = request.model_dump(include={"uid","streamID", "synopsisID","dataSetkey", "param", "requestID", "noOfP"})
     sUID=request.uid
    
     try:
+        # check if the same estimation request has been sent before
         existing = db.query(EstimationM).filter(EstimationM.uid == sUID).first()
 
         if existing:
-            # update existing request
-            existing.last_req = now
-            existing.age = age_sec
-            # if abs(now - existing.last_data) >= age_sec:
-            #     toRefresh = True
-            # else:
-            #     toRefresh = False
-
-
+            # update existing request timestamp
+            existing.last_req = now        
             db.commit()
             db.refresh(existing)
-            return {"status": "Estimation updated", "Estimation": existing.fetchedEst}
+
+            use_cached = should_use_cached(existing, request.cache_max_age)
+            if use_cached:
+                return {"status": "Estimation updated", "Estimation": existing.fetchedEst, 
+                        "Cached" : use_cached
+                        }
+            else:
+                await produce(REQ_TOP, existing.body) #send request to Kafka
+                # Wait for matching estimation
+                estimation = await wait_for_estimation(request.uid)
+                # Update the existing estimation with the new one and its timestamp
+                existing.fetchedEst = estimation
+                existing.last_data = datetime.now()
+                db.commit()
+                db.refresh(existing)
+                return {"status": "Estimation updated", "Estimation": estimation, 
+                        "Cached" : use_cached
+                        }
         else:
             try:
                 await produce(REQ_TOP, req_body) #send request to Kafka
                 # Wait for matching estimation
-                estimation = await wait_for_estimation(request.uid, timeout=5)
+                estimation = await wait_for_estimation(request.uid)
                 # add new estimation request on DB
                 db_estimation = EstimationM(
                     uid=sUID,
                     body=req_body,
-                    data_expiration=get_expiration(age_sec),
                     last_req=now,
                     last_data=now,
                     fetchedEst=estimation

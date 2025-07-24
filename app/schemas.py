@@ -1,6 +1,5 @@
-from pydantic import BaseModel, Field, field_validator
-from typing import Optional, Dict, Any, List, Literal
-from datetime import timedelta
+from pydantic import BaseModel, Field
+from typing import Optional, Dict, Any, List
 from enum import Enum
 import uuid, random
 
@@ -69,38 +68,9 @@ class DelRequest(RequestBase):
 class EstRequest(RequestBase):
     uid: int = Field(description="4-digit ID")
     param: List[str] = Field(default_factory=list, description="Parameters of the request")
-    age: timedelta = Field(default="00:01", description="How fresh the estimation will be")
-
-    @field_validator('age', mode='before')
-    def validate_duration(cls, value):
-        if isinstance(value, timedelta):
-            return value
-        try:
-            parts = [int(p) for p in value.split(":")]
-            if len(parts) == 3:
-                h, m, s = parts
-            elif len(parts) == 2:
-                h, m, s = 0, *parts
-            elif len(parts) == 1:
-                h, m, s = 0, 0, parts[0]
-            else:
-                raise ValueError
-            return timedelta(hours=h, minutes=m, seconds=s)
-        except Exception:
-            raise ValueError("Duration must be in format HH:MM:SS or MM:SS")
+    cache_max_age: Optional[int] = Field(default=1, description="How 'fresh' should the estimation be(in minutes)")
 
 class DataIn(BaseModel):
     values: Dict[str, Any] = Field(..., description="Values to be inserted in the Synopsis")
     streamID: str = Field(..., description="The name of the stream where the request will be asked")
     dataSetkey: str = Field(..., description="Hash Value")
-
-# class Estimation(BaseModel):
-#     uid : int = Field(description="Unique ID of the Estimation")
-#     age: timedelta = Field(default="00:01", description="How fresh the estimation will be")
-#     streamID: str = Field(..., description="The name of the stream where the request will be asked")
-#     synopsisID: int = Field(...,ge=1, le=31, description="Synopsis type(e.g. 1=CountMin, 2=BloomFilter,...)")
-#     dataSetkey: str = Field(..., description="Hash Value")
-#     requestID: Optional[Literal[3,6]] = Field(default=3, description="Estimation Type(Default=3)")
-#     param: List[str] = Field(default_factory=list, description="Parameters of the request")
-#     noOfP: Optional[int] = Field(default=4, description="Job parallelism")
-
