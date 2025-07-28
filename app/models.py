@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, DateTime, Boolean
+from sqlalchemy import Column, Integer, DateTime, Boolean, String
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.types import TypeDecorator, TEXT
 import json
@@ -19,6 +19,12 @@ class JsonType(TypeDecorator):
 
 def get_expiration(minutes: int = 1) -> datetime:
     return datetime.now() + timedelta(minutes=minutes)
+
+class Synopsis(Base):
+    __tablename__ = 'synopsis'
+    uid = Column(Integer, primary_key=True, nullable=False, unique=True)
+    createdAt = Column(DateTime(timezone=True), nullable=False)
+    details = Column(String, nullable=False)
 
 class EstimationM(Base):
     __tablename__ = 'estimations'

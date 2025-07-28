@@ -1,7 +1,7 @@
 import asyncio, json, time
 from aiokafka import AIOKafkaConsumer
 
-KAFKA_BROKER= 'kafka:9093'
+KAFKA_BROKER= 'kafka1:9092'
 CONS_TIMEOUT=1000
 
 async def consume(topic, max_duration=5):

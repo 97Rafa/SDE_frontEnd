@@ -2,7 +2,7 @@ from aiokafka import AIOKafkaProducer
 import json
 
 
-KAFKA_BROKER= 'kafka:9093'
+KAFKA_BROKER= 'kafka1:9092'
 
 producer = None
 

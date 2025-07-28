@@ -1,17 +1,15 @@
 from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
-from app.schemas import RequestBase, AddRequest,DelRequest, DataIn, EstRequest, SYNOPSIS_ID_PARAM
-from app.models import EstimationM, get_expiration
+from app.schemas import RequestBase, AddRequest,SpecRequest, DataIn, EstRequest, SYNOPSIS_ID_PARAM
+from app.models import EstimationM, Synopsis
 from . import database
 from app.kafka_producer import produce
 from app.kafka_consumer import consume
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 from enum import Enum
-# from aiokafka import AIOKafkaConsumer
-import random, asyncio, json
-from asyncio import TimeoutError as AsyncTimeoutError
+import random, asyncio,time
 
 
 
@@ -23,11 +21,11 @@ DAT_TOP='data_topic'
 EST_TOP='estimation_topic'
 LOG_TOP='logging_topic'
 PARALELISM=4
-KAFKA_BROKER= 'kafka:9093'
+KAFKA_BROKER= 'kafka1:9092'
 
 TOPICS = {REQ_TOP, DAT_TOP, EST_TOP, LOG_TOP}
 
-RESPONSE_TIMEOUT = 5
+RESPONSE_TIMEOUT = 8
 ESTIMATION_TIMEOUT = 5
 
 tags_metadata = [
@@ -36,7 +34,7 @@ tags_metadata = [
         "description": "Add new Data in a Synopsis. It sends it through Kafka directly to SDE",
     },
     {
-        "name": "AddSynopsis",
+        "name": "Add Synopsis",
         "description": "Add a new Synopsis in SDE"
     },
     {
@@ -44,32 +42,40 @@ tags_metadata = [
         "description": "Ask SDE for an Estimation of a specific Synopse"
     },
     {
-        "name": "DeleteSynopsis",
+        "name": "Delete Synopsis",
         "description": "Delete a Synopsis in SDE(Req ID = 2)"
     },
     {
-        "name": "CreateSnapshot",
+        "name": "Create Snapshot",
         "description": "Create a Synopsis Snapshot in SDE(Req ID = 100)"
     },
     {
-        "name": "ListSnapshots",
+        "name": "List Snapshots",
         "description": "List Synopsis Snapshots the system(Req ID = 301)"
     },
     {
-        "name": "LoadLatest",
+        "name": "Load Latest Snapshot",
         "description": "Load the latest Snapshot of a specific Synopsis(Req ID = 200)"
     },
     {
-        "name": "LoadCustom",
+        "name": "Load Custom Snapshot",
         "description": "Load a specific Snapshot of a specific Synopsis(Req ID = 201)"
     },
     {
-        "name": "CreateFromSnap",
+        "name": "Create Synopsis from Snapshot",
         "description": "Create a Synopsis from Snapshot in the system(Req ID = 202)"
     },
     {
         "name": "Kafka Direct",
         "description": "Direct Kafka Communication(No DB)"
+    },
+    {
+        "name": "Initiate SM",
+        "description": "Update Storage Manager Credentials(Req ID = 101)"
+    },
+    {
+        "name": "List Synopsis",
+        "description": "List the synopsis in the system right now"
     },
 ]
 
@@ -82,13 +88,6 @@ def get_db():
         db.close()
 
 
-# @asynccontextmanager
-# async def lifespan(app: FastAPI):
-#     # STARTUP
-#     asyncio.create_task(start_monitoring_task(database.SessionLocal))
-#     yield
-#     # SHUTDOWN (if needed): cleanup resources here
-
 
 # FastAPI app
 app = FastAPI(openapi_tags=tags_metadata,
@@ -96,8 +95,6 @@ app = FastAPI(openapi_tags=tags_metadata,
                 description="Here will be the Description",
                 summary="Service Interface for Synopses Data Engine",
                 version="0.0.1")
-
-
 
 @app.post("/produce/{topic}", tags=["Kafka Direct"])
 async def produce_message(topic: str, msg: dict):
@@ -126,28 +123,59 @@ async def get_messages():
 
 
 
-# It consumes the logger topic after a request is sent to SDE to find a response 
-async def wait_for_response(externalUID: str):
+# # It consumes the logger topic after a request is sent to SDE to find a response 
+async def wait_for_response(externalUID: str)-> dict:
     timeout = RESPONSE_TIMEOUT
+    start_time = time.monotonic()
+
+    while True:
+        remaining = timeout - (time.monotonic() - start_time)
+        if remaining <= 0:
+            raise HTTPException(status_code=504, detail="Timeout waiting for Kafka response")
+
+        try:
+            log_msgs = await asyncio.wait_for(consume(LOG_TOP), timeout=remaining)
+            if not log_msgs:
+                await asyncio.sleep(0.1)
+                continue
+
+            for value in log_msgs:
+                if value.get("relatedRequestIdentifier") == externalUID:
+                    return {
+                        "externalUID": value.get("relatedRequestIdentifier"),
+                        "timestamp": value.get("timestamp"),
+                        "requestTypeID": value.get("requestTypeID"),
+                        "content": value.get("content")
+                    }
+
+        except asyncio.TimeoutError:
+            continue
+
+        await asyncio.sleep(0.1)  # prevent tight loop
+
+
+@app.post("/requests/storeInit", tags=["Initiate SM"])
+async def smanager_init():
+    json_request = {
+                        "externalUID": "1000",
+                        "uid":1,
+                        "requestID": 101,
+                        "dataSetkey": "Forex",
+                        "noOfP": 4,
+                        "param": [
+                            "aws"
+                        ]
+                    }
+    await produce(REQ_TOP, json_request)
+    # Wait for matching response
     try:
-        log_msgs = await asyncio.wait_for(consume(LOG_TOP), timeout)
-    except AsyncTimeoutError:
-        raise HTTPException(status_code=504, detail="Timeout waiting for Kafka response")
+        response = await wait_for_response("1000")
+        return {"response": response}
+    except HTTPException as e:
+        return {"Error": e.status_code, "Detail" : e.detail}
 
-    for value in log_msgs:
-        if value.get("relatedRequestIdentifier") == externalUID:
-            return {
-                "externalUID": value.get("relatedRequestIdentifier"),
-                "timestamp": value.get("timestamp"),
-                "requestTypeID": value.get("requestTypeID"),
-                "content": value.get("content")
-            }
-
-    raise HTTPException(status_code=404, detail="Matching response not found")
-
-
-@app.post("/requests/add", tags=["AddSynopsis"])
-async def create_addrequest(request: AddRequest):
+@app.post("/requests/add", tags=["Add Synopsis"])
+async def create_addrequest(request: AddRequest, db: Session = Depends(get_db)):
     synopsis_id = request.synopsisID
     param_list = request.param
     request.requestID = 1
@@ -181,27 +209,44 @@ async def create_addrequest(request: AddRequest):
     # Wait for matching response
     try:
         response = await wait_for_response(request.externalUID)
+        content=response.get('content')
+        timestamp = response.get('timestamp')
+        synopsis = Synopsis(
+                    uid=request.uid,
+                    createdAt=datetime.strptime(timestamp, "%d-%m-%Y %H:%M:%S"),
+                    details=content[0]
+                    )
+        db.add(synopsis)
+        db.commit()
+        db.refresh(synopsis)
         return {"response": response}
-    except asyncio.TimeoutError:
-        return {"error": "Timeout waiting for response"}
+    except HTTPException as e:
+        return {"Error": e.status_code, "Detail" : e.detail}
+    except SQLAlchemyError as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
     
 
-@app.post("/requests/delete", tags=["DeleteSynopsis"])
-async def create_delrequest(request: DelRequest):
-    request.requestID = 2    
+@app.post("/requests/delete", tags=["Delete Synopsis"])
+async def create_delrequest(request: SpecRequest, db: Session = Depends(get_db)):
+    request.requestID = 2
+    # Look on Synopsis table to delete it from there too
+    synopse_to_delete = db.query(Synopsis).filter(Synopsis.uid == request.uid).first()
+    db.delete(synopse_to_delete)
+    db.commit()
     json_request = request.model_dump()
     await produce(REQ_TOP, json_request)
     # Wait for matching response
     try:
         response = await wait_for_response(request.externalUID)
         return {"response": response}
-    except asyncio.TimeoutError:
-        return {"error": "Timeout waiting for response"}
+    except HTTPException as e:
+        return {"Error": e.status_code, "Detail" : e.detail}
 
 
-@app.post("/requests/createSnapshot", tags=["CreateSnapshot"])
-async def create_snapshot(request: RequestBase):
+@app.post("/requests/createSnapshot", tags=["Create Snapshot"])
+async def create_snapshot(request: SpecRequest):
     request.requestID = 100    
     json_request = request.model_dump()
     await produce(REQ_TOP, json_request)
@@ -209,11 +254,11 @@ async def create_snapshot(request: RequestBase):
     try:
         response = await wait_for_response(request.externalUID)
         return {"response": response}
-    except asyncio.TimeoutError:
-        return {"error": "Timeout waiting for response"}
+    except HTTPException as e:
+        return {"Error": e.status_code, "Detail" : e.detail}
 
-@app.post("/requests/listSnapshots", tags=["ListSnapshots"])
-async def list_snapshots(request: RequestBase):
+@app.post("/requests/listSnapshots", tags=["List Snapshots"])
+async def list_snapshots(request: SpecRequest):
     request.requestID = 301    
     json_request = request.model_dump()
     await produce(REQ_TOP, json_request)
@@ -221,11 +266,11 @@ async def list_snapshots(request: RequestBase):
     try:
         response = await wait_for_response(request.externalUID)
         return {"response": response}
-    except asyncio.TimeoutError:
-        return {"error": "Timeout waiting for response"}
+    except HTTPException as e:
+        return {"Error": e.status_code, "Detail" : e.detail}
 
-@app.post("/requests/loadLatest", tags=["LoadLatest"])
-async def load_latest(request: RequestBase):
+@app.post("/requests/loadLatest", tags=["Load Latest Snapshot"])
+async def load_latest(request: SpecRequest):
     request.requestID = 200    
     json_request = request.model_dump()
     await produce(REQ_TOP, json_request)
@@ -233,11 +278,11 @@ async def load_latest(request: RequestBase):
     try:
         response = await wait_for_response(request.externalUID)
         return {"response": response}
-    except asyncio.TimeoutError:
-        return {"error": "Timeout waiting for response"}
+    except HTTPException as e:
+        return {"Error": e.status_code, "Detail" : e.detail}
 
-@app.post("/requests/loadCustom", tags=["LoadCustom"])
-async def load_custom(request: RequestBase):
+@app.post("/requests/loadCustom", tags=["Load Custom Snapshot"])
+async def load_custom(request: SpecRequest):
     request.requestID = 201    
     json_request = request.model_dump()
     await produce(REQ_TOP, json_request)
@@ -245,11 +290,11 @@ async def load_custom(request: RequestBase):
     try:
         response = await wait_for_response(request.externalUID)
         return {"response": response}
-    except asyncio.TimeoutError:
-        return {"error": "Timeout waiting for response"}
+    except HTTPException as e:
+        return {"Error": e.status_code, "Detail" : e.detail}
 
-@app.post("/requests/createFromSnap", tags=["CreateFromSnap"])
-async def create_fromSnap(request: AddRequest,version_number: int = 0, new_uid: int = random.randint(90000, 100000)):
+@app.post("/requests/createFromSnap", tags=["Create Synopsis from Snapshot"])
+async def create_fromSnap(request: AddRequest,version_number: int = 0, new_uid: int = random.randint(90000, 100000), db: Session = Depends(get_db)):
     request.requestID = 202 
     request.param = [version_number, new_uid]
     json_request = request.model_dump()
@@ -257,29 +302,50 @@ async def create_fromSnap(request: AddRequest,version_number: int = 0, new_uid: 
     # Wait for matching response
     try:
         response = await wait_for_response(request.externalUID)
+        content=response.get('content')
+        timestamp = response.get('timestamp')
+        synopsis = Synopsis(
+                    uid=request.uid,
+                    createdAt=datetime.strptime(timestamp, "%d-%m-%Y %H:%M:%S"),
+                    details=content[0]
+                    )
+        db.add(synopsis)
+        db.commit()
+        db.refresh(synopsis)
         return {"response": response}
-    except asyncio.TimeoutError:
-        return {"error": "Timeout waiting for response"}
+    except HTTPException as e:
+        return {"Error": e.status_code, "Detail" : e.detail}
     
 
 #It waits for Kafka estimation topic to give an estimation to the corresponding synopsis
-async def wait_for_estimation(uid: int):
-    timeout = ESTIMATION_TIMEOUT
-    try:
-        est_msgs = await asyncio.wait_for(consume(EST_TOP), timeout)
-    except AsyncTimeoutError:
-        raise HTTPException(status_code=504, detail="Timeout waiting for Kafka response")
+async def wait_for_estimation(uid: int) -> dict:
+    timeout = RESPONSE_TIMEOUT
+    start_time = time.monotonic()
 
-    for value in est_msgs:
-        if value.get("uid") == uid:
-            return {
-	            "uid": value.get("uid"),
-                "synopsisID": value.get("synopsisID"),
-	            "param": value.get("param"),
-                "estimation": value.get("estimation")
-            }
+    while True:
+        remaining = timeout - (time.monotonic() - start_time)
+        if remaining <= 0:
+            raise HTTPException(status_code=504, detail="Timeout waiting for Kafka response")
 
-    raise HTTPException(status_code=404, detail="Matching estimation not found")
+        try:
+            est_msgs = await asyncio.wait_for(consume(EST_TOP), timeout)
+            if not est_msgs:
+                await asyncio.sleep(0.1)
+                continue
+
+            for value in est_msgs:
+                if value.get("uid") == uid:
+                    return {
+                        "uid": value.get("uid"),
+                        "synopsisID": value.get("synopsisID"),
+                        "param": value.get("param"),
+                        "estimation": value.get("estimation")
+                    }
+
+        except asyncio.TimeoutError:
+            continue
+
+        await asyncio.sleep(0.1)  # prevent tight loop
 
 # It compares the time that has passed since the last data where added on the table
 # with the max age of the estimation the request specifies. If max age is longer
@@ -355,3 +421,7 @@ async def create_estimation(request: EstRequest, db: Session = Depends(get_db)):
 @app.get("/estimations/", tags=["Estimations"])
 def read_estimations(db: Session = Depends(get_db)):
     return db.query(EstimationM).all()
+
+@app.get("/synopsis/", tags=["List Synopsis"])
+def list_synopsis(db: Session = Depends(get_db)):
+    return db.query(Synopsis).all()

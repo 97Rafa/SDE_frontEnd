@@ -62,7 +62,7 @@ class RequestBase(BaseModel):
 class AddRequest(RequestBase):
     param: List[str] = Field(default_factory=list, description="Parameters of the request")
 
-class DelRequest(RequestBase):
+class SpecRequest(RequestBase):
     uid: int = Field(description="4-digit ID")
 
 class EstRequest(RequestBase):
