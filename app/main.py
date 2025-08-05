@@ -7,7 +7,7 @@ from . import database
 from app.kafka_producer import produce
 from app.kafka_consumer import consume
 from datetime import datetime, timedelta
-from contextlib import asynccontextmanager
+# from contextlib import asynccontextmanager
 from enum import Enum
 import random, asyncio,time
 
