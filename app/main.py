@@ -1,15 +1,17 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, status
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 from app.schemas import RequestBase, AddRequest,SpecRequest, DataIn, EstRequest, SYNOPSIS_ID_PARAM
 from app.models import EstimationM, Synopsis
 from . import database
+from typing import List
 from app.kafka_producer import produce
 from app.kafka_consumer import consume
 from datetime import datetime, timedelta
-# from contextlib import asynccontextmanager
+from pathlib import Path
 from enum import Enum
 import random, asyncio,time
+import csv
 
 
 
@@ -99,28 +101,81 @@ app = FastAPI(openapi_tags=tags_metadata,
 @app.post("/produce/{topic}", tags=["Kafka Direct"])
 async def produce_message(topic: str, msg: dict):
     if topic not in TOPICS:
-        raise HTTPException(status_code=400, detail="Invalid topic")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid topic")
     await produce(topic, msg)
     return {"status": "sent", "topic": topic}
     
 @app.get("/consume/{topic}", tags=["Kafka Direct"])
 async def get_messages(topic: str):
     if topic not in TOPICS:
-        raise HTTPException(status_code=400, detail="Invalid topic")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid topic")
     data = await consume(topic)
     return {"topic": topic, "messages": data}
 
 @app.post("/dataIn/", tags=["DataIn"])
-async def produce_message(data: DataIn):
+async def produce_data(data: DataIn):
     json_data = data.model_dump()
     await produce(DAT_TOP, json_data)
     return {"status": "Sent Data", "data": json_data}
     
 @app.get("/dataIn/", tags=["DataIn"])
-async def get_messages():
+async def get_data():
     data = await consume(DAT_TOP)
     return {"Data in Kafka": data}
 
+
+UPLOAD_FOLDER = Path("uploads")
+UPLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
+
+@app.post("/dataIn/csv", tags=["DataIn"])
+async def create_datain_csv(file: UploadFile = File(...)):
+    # Check if file is csv
+    if not file.filename.lower().endswith(".csv"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Uploaded file must be a CSV."
+        )
+
+    file_path = UPLOAD_FOLDER / file.filename
+    try:
+        # Save file
+        with open(file_path, "wb") as buffer:
+            buffer.write(await file.read())
+
+        # Parse CSV
+        with open(file_path, newline="", encoding="utf-8") as csvfile:
+            csvreader = csv.DictReader(csvfile)
+            required_columns = {"StreamID", "dataSetkey"}
+
+            if not required_columns.issubset(csvreader.fieldnames or []):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"CSV must contain columns: {', '.join(required_columns)}"
+                )
+            records = 0
+            for i, row in enumerate(csvreader, start=1):
+                try:
+                    data_in = DataIn(
+                        streamID=row["StreamID"],
+                        dataSetkey=row["dataSetkey"],
+                        values={k: v for k, v in row.items() if k not in ["StreamID", "dataSetkey"]}
+                    )
+                    await produce(DAT_TOP, data_in.model_dump())
+                    records += 1
+                except Exception as e:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail=f"Row {i} failed: {str(e)}"                    )
+    
+        return {"status":status.HTTP_200_OK, "message": f"Sent {records} messages to '{DAT_TOP}'"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while processing the CSV."
+        )
 
 
 # # It consumes the logger topic after a request is sent to SDE to find a response 
@@ -131,7 +186,7 @@ async def wait_for_response(externalUID: str)-> dict:
     while True:
         remaining = timeout - (time.monotonic() - start_time)
         if remaining <= 0:
-            raise HTTPException(status_code=504, detail="Timeout waiting for Kafka response")
+            raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="Timeout waiting for Kafka response")
 
         try:
             log_msgs = await asyncio.wait_for(consume(LOG_TOP), timeout=remaining)
@@ -181,13 +236,13 @@ async def create_addrequest(request: AddRequest, db: Session = Depends(get_db)):
     request.requestID = 1
 
     if synopsis_id not in SYNOPSIS_ID_PARAM:
-        raise HTTPException(status_code=400, detail="Invalid synopsisID")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid synopsisID")
     # matches synopsisID with the expected parameters
     schema = SYNOPSIS_ID_PARAM[synopsis_id].value
 
     if len(param_list) != len(schema):
         raise HTTPException(
-            status_code=422,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Expected {len(schema)} parameters: {list(schema.keys())}"
         )
 
@@ -200,7 +255,7 @@ async def create_addrequest(request: AddRequest, db: Session = Depends(get_db)):
                 expected_type(value)
         except Exception as e:
             raise HTTPException(
-                status_code=422,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"Invalid value for '{name}': expected {expected_type.__name__}, got '{value}'"
             )
     
@@ -224,7 +279,7 @@ async def create_addrequest(request: AddRequest, db: Session = Depends(get_db)):
         return {"Error": e.status_code, "Detail" : e.detail}
     except SQLAlchemyError as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
     
 
@@ -233,8 +288,9 @@ async def create_delrequest(request: SpecRequest, db: Session = Depends(get_db))
     request.requestID = 2
     # Look on Synopsis table to delete it from there too
     synopse_to_delete = db.query(Synopsis).filter(Synopsis.uid == request.uid).first()
-    db.delete(synopse_to_delete)
-    db.commit()
+    if synopse_to_delete is not None:
+        db.delete(synopse_to_delete)
+        db.commit()
     json_request = request.model_dump()
     await produce(REQ_TOP, json_request)
     # Wait for matching response
@@ -325,7 +381,7 @@ async def wait_for_estimation(uid: int) -> dict:
     while True:
         remaining = timeout - (time.monotonic() - start_time)
         if remaining <= 0:
-            raise HTTPException(status_code=504, detail="Timeout waiting for Kafka response")
+            raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="Timeout waiting for Kafka response")
 
         try:
             est_msgs = await asyncio.wait_for(consume(EST_TOP), timeout)
@@ -414,7 +470,7 @@ async def create_estimation(request: EstRequest, db: Session = Depends(get_db)):
 
     except SQLAlchemyError as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
     
 
 

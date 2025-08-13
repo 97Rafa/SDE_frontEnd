@@ -3,4 +3,4 @@ uvicorn
 sqlalchemy
 pydantic
 aiokafka
-# apscheduler
+python-multipart
