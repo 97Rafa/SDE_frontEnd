@@ -1,4 +1,4 @@
-time,StockID1,price,StreamID1,dataSetkey
+time,StockID,price,StreamID,dataSetkey
 2025-02-02 13:12:10,ForexALLNoExpiry,778.12,ForexALLNoExpiry,Forex
 2024-10-27 22:20:39,ForexALLNoExpiry,860.65,ForexALLNoExpiry,Forex
 2025-01-28 16:30:06,ForexALLNoExpiry,530.4,ForexALLNoExpiry,Forex

@@ -3,8 +3,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 from app.schemas import RequestBase, AddRequest,SpecRequest, DataIn, EstRequest, SYNOPSIS_ID_PARAM
 from app.models import EstimationM, Synopsis
+from app.config import settings
 from . import database
-from typing import List
 from app.kafka_producer import produce
 from app.kafka_consumer import consume
 from datetime import datetime, timedelta
@@ -14,21 +14,20 @@ import random, asyncio,time
 import csv
 
 
-
 # Initialize DB tables
 database.init_db()
 
-REQ_TOP='request_topic'
-DAT_TOP='data_topic'
-EST_TOP='estimation_topic'
-LOG_TOP='logging_topic'
-PARALELISM=4
-KAFKA_BROKER= 'kafka1:9092'
+REQ_TOP = settings.req_topic
+DAT_TOP = settings.dat_topic
+EST_TOP = settings.est_topic
+LOG_TOP = settings.log_topic
+PARALELISM = settings.parallelism
+KAFKA_BROKER = settings.kafka_broker
 
 TOPICS = {REQ_TOP, DAT_TOP, EST_TOP, LOG_TOP}
 
-RESPONSE_TIMEOUT = 8
-ESTIMATION_TIMEOUT = 5
+RESPONSE_TIMEOUT = settings.response_timeout
+ESTIMATION_TIMEOUT = settings.estimation_timeout
 
 tags_metadata = [
     {
