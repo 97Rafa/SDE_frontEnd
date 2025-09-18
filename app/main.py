@@ -1,12 +1,13 @@
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, status
 from sqlalchemy.orm import Session
+from sqlalchemy import exists
 from sqlalchemy.exc import SQLAlchemyError
 from app.schemas import RequestBase, AddRequest,SpecRequest, DataIn, EstRequest, SYNOPSIS_ID_PARAM
 from app.models import EstimationM, Synopsis
 from app.config import settings
 from . import database
-from app.kafka_producer import produce
-from app.kafka_consumer import consume
+from app.kafka_producer import start_producer, stop_producer, produce
+from app.kafka_consumer import start_consumers, stop_consumers, get_cons_messages
 from datetime import datetime, timedelta
 from pathlib import Path
 from enum import Enum
@@ -97,6 +98,16 @@ app = FastAPI(openapi_tags=tags_metadata,
                 summary="Service Interface for Synopses Data Engine",
                 version="0.0.1")
 
+@app.on_event("startup")
+async def startup_event():
+    await start_producer()
+    await start_consumers(list(TOPICS))
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await stop_producer()
+    await stop_consumers()
+
 @app.post("/produce/{topic}", tags=["Kafka Direct"])
 async def produce_message(topic: str, msg: dict):
     if topic not in TOPICS:
@@ -105,11 +116,11 @@ async def produce_message(topic: str, msg: dict):
     return {"status": "sent", "topic": topic}
     
 @app.get("/consume/{topic}", tags=["Kafka Direct"])
-async def get_messages(topic: str):
+async def get_messages(topic: str, limit: int = 100):
     if topic not in TOPICS:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid topic")
-    data = await consume(topic)
-    return {"topic": topic, "messages": data}
+    messages = get_cons_messages(topic, limit)
+    return {"topic": topic, "messages": messages}
 
 @app.post("/dataIn/", tags=["DataIn"])
 async def produce_data(data: DataIn):
@@ -119,7 +130,7 @@ async def produce_data(data: DataIn):
     
 @app.get("/dataIn/", tags=["DataIn"])
 async def get_data():
-    data = await consume(DAT_TOP)
+    data = get_cons_messages(DAT_TOP)
     return {"Data in Kafka": data}
 
 
@@ -177,35 +188,40 @@ async def create_datain_csv(file: UploadFile = File(...)):
         )
 
 
-# # It consumes the logger topic after a request is sent to SDE to find a response 
-async def wait_for_response(externalUID: str)-> dict:
+
+async def wait_for_response(externalUID: str) -> dict:
+    """
+    Wait for a Kafka log message matching the given externalUID.
+    Uses the in-memory buffer filled by background consumers.
+    """
     timeout = RESPONSE_TIMEOUT
     start_time = time.monotonic()
 
     while True:
         remaining = timeout - (time.monotonic() - start_time)
         if remaining <= 0:
-            raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="Timeout waiting for Kafka response")
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                detail="Timeout waiting for Kafka response"
+            )
 
-        try:
-            log_msgs = await asyncio.wait_for(consume(LOG_TOP), timeout=remaining)
-            if not log_msgs:
-                await asyncio.sleep(0.1)
+        log_msgs = get_cons_messages(LOG_TOP)
+
+        for value in log_msgs:
+            if not isinstance(value, dict):
+                continue
+            if "relatedRequestIdentifier" not in value:
                 continue
 
-            for value in log_msgs:
-                if value.get("relatedRequestIdentifier") == externalUID:
-                    return {
-                        "externalUID": value.get("relatedRequestIdentifier"),
-                        "timestamp": value.get("timestamp"),
-                        "requestTypeID": value.get("requestTypeID"),
-                        "content": value.get("content")
-                    }
+            if value["relatedRequestIdentifier"] == externalUID:
+                return {
+                    "externalUID": value["relatedRequestIdentifier"],
+                    "timestamp": value.get("timestamp"),
+                    "requestTypeID": value.get("requestTypeID"),
+                    "content": value.get("content"),
+                }
 
-        except asyncio.TimeoutError:
-            continue
-
-        await asyncio.sleep(0.1)  # prevent tight loop
+        await asyncio.sleep(0.1)  # prevent busy loop
 
 
 @app.post("/requests/storeInit", tags=["Initiate SM"])
@@ -233,6 +249,15 @@ async def create_addrequest(request: AddRequest, db: Session = Depends(get_db)):
     synopsis_id = request.synopsisID
     param_list = request.param
     request.requestID = 1
+
+    # Check if UID already exists in synopsis table
+    uid_exists = db.query(exists().where(Synopsis.uid == request.uid)).scalar()
+    if uid_exists:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A record with this UID already exists"
+        )
+
 
     if synopsis_id not in SYNOPSIS_ID_PARAM:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid synopsisID")
@@ -383,7 +408,7 @@ async def wait_for_estimation(uid: int) -> dict:
             raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="Timeout waiting for Kafka response")
 
         try:
-            est_msgs = await asyncio.wait_for(consume(EST_TOP), timeout)
+            est_msgs = await asyncio.wait_for(get_messages(EST_TOP), timeout)
             if not est_msgs:
                 await asyncio.sleep(0.1)
                 continue
