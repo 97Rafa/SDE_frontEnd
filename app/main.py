@@ -7,7 +7,7 @@ from app.models import EstimationM, Synopsis
 from app.config import settings
 from . import database
 from app.kafka_producer import start_producer, stop_producer, produce
-from app.kafka_consumer import start_consumers, stop_consumers, get_cons_messages
+from app.kafka_consumer import start_consumers, stop_consumers, get_cons_messages, get_latest_message
 from datetime import datetime, timedelta
 from pathlib import Path
 from enum import Enum
@@ -243,69 +243,85 @@ async def smanager_init():
         return {"response": response}
     except HTTPException as e:
         return {"Error": e.status_code, "Detail" : e.detail}
-
+    
 @app.post("/requests/add", tags=["Add Synopsis"])
 async def create_addrequest(request: AddRequest, db: Session = Depends(get_db)):
     synopsis_id = request.synopsisID
     param_list = request.param
     request.requestID = 1
 
-    # Check if UID already exists in synopsis table
-    uid_exists = db.query(exists().where(Synopsis.uid == request.uid)).scalar()
-    if uid_exists:
+    # --- Step 1: Pre-validations ---
+    if db.query(exists().where(Synopsis.uid == request.uid)).scalar():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="A record with this UID already exists"
         )
 
-
     if synopsis_id not in SYNOPSIS_ID_PARAM:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid synopsisID")
-    # matches synopsisID with the expected parameters
-    schema = SYNOPSIS_ID_PARAM[synopsis_id].value
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid synopsisID"
+        )
 
+    schema = SYNOPSIS_ID_PARAM[synopsis_id].value
     if len(param_list) != len(schema):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Expected {len(schema)} parameters: {list(schema.keys())}"
         )
 
-    # Validate params depending on synopsisID
     for (name, expected_type), value in zip(schema.items(), param_list):
         try:
             if isinstance(expected_type, type) and issubclass(expected_type, Enum):
                 expected_type(value)
             else:
                 expected_type(value)
-        except Exception as e:
+        except Exception:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"Invalid value for '{name}': expected {expected_type.__name__}, got '{value}'"
             )
-    
+
+    # --- Step 2: Produce event ---
     json_request = request.model_dump()
     await produce(REQ_TOP, json_request)
-    # Wait for matching response
+
+    # --- Step 3: Handle async response + DB write ---
     try:
         response = await wait_for_response(request.externalUID)
-        content=response.get('content')
-        timestamp = response.get('timestamp')
+
+        content = response.get("content")
+        timestamp = response.get("timestamp")
+
         synopsis = Synopsis(
-                    uid=request.uid,
-                    createdAt=datetime.strptime(timestamp, "%d-%m-%Y %H:%M:%S"),
-                    details=content[0]
-                    )
+            uid=request.uid,
+            createdAt=datetime.strptime(timestamp, "%d-%m-%Y %H:%M:%S"),
+            details=content[0],
+        )
+
         db.add(synopsis)
         db.commit()
         db.refresh(synopsis)
+
         return {"response": response}
-    except HTTPException as e:
-        return {"Error": e.status_code, "Detail" : e.detail}
+
     except SQLAlchemyError as e:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database error: {str(e)}"
+        )
+    except HTTPException:
+        # Let FastAPI handle any re-raised HTTPException
+        raise
+    except Exception as e:
+        # Catch-all for unexpected errors
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unexpected error: {str(e)}"
+        )
 
-    
+
 
 @app.post("/requests/delete", tags=["Delete Synopsis"])
 async def create_delrequest(request: SpecRequest, db: Session = Depends(get_db)):
@@ -315,6 +331,11 @@ async def create_delrequest(request: SpecRequest, db: Session = Depends(get_db))
     if synopse_to_delete is not None:
         db.delete(synopse_to_delete)
         db.commit()
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No record found with this UID"
+        )
     json_request = request.model_dump()
     await produce(REQ_TOP, json_request)
     # Wait for matching response
@@ -397,7 +418,6 @@ async def create_fromSnap(request: AddRequest,version_number: int = 0, new_uid: 
         return {"Error": e.status_code, "Detail" : e.detail}
     
 
-#It waits for Kafka estimation topic to give an estimation to the corresponding synopsis
 async def wait_for_estimation(uid: int) -> dict:
     timeout = RESPONSE_TIMEOUT
     start_time = time.monotonic()
@@ -405,27 +425,26 @@ async def wait_for_estimation(uid: int) -> dict:
     while True:
         remaining = timeout - (time.monotonic() - start_time)
         if remaining <= 0:
-            raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="Timeout waiting for Kafka response")
+            raise HTTPException(
+                status_code=504,
+                detail="Timeout waiting for Kafka response"
+            )
 
         try:
-            est_msgs = await asyncio.wait_for(get_messages(EST_TOP), timeout)
-            if not est_msgs:
-                await asyncio.sleep(0.1)
-                continue
+            value = get_latest_message(EST_TOP)
 
-            for value in est_msgs:
-                if value.get("uid") == uid:
-                    return {
-                        "uid": value.get("uid"),
-                        "synopsisID": value.get("synopsisID"),
-                        "param": value.get("param"),
-                        "estimation": value.get("estimation")
-                    }
+            if isinstance(value, dict) and value.get("uid") == uid:
+                return {
+                    "uid": value.get("uid"),
+                    "synopsisID": value.get("synopsisID"),
+                    "param": value.get("param"),
+                    "estimation": value.get("estimation"),
+                }
 
         except asyncio.TimeoutError:
             continue
 
-        await asyncio.sleep(0.1)  # prevent tight loop
+        await asyncio.sleep(0.1)  # avoid busy loop
 
 # It compares the time that has passed since the last data where added on the table
 # with the max age of the estimation the request specifies. If max age is longer
@@ -443,6 +462,13 @@ async def create_estimation(request: EstRequest, db: Session = Depends(get_db)):
     now = datetime.now()
     req_body = request.model_dump(include={"uid","streamID", "synopsisID","dataSetkey", "param", "requestID", "noOfP"})
     sUID=request.uid
+
+    # Check if UID exists in synopsis table
+    synopsis_exists = db.query(exists().where(Synopsis.uid == request.uid)).scalar()
+    if synopsis_exists is False:
+        raise HTTPException(status_code = status.HTTP_404_NOT_FOUND,
+                            detail = "There is no synopsis with this UID"
+                            )
    
     try:
         # check if the same estimation request has been sent before
@@ -459,42 +485,67 @@ async def create_estimation(request: EstRequest, db: Session = Depends(get_db)):
                 return {"status": "Estimation updated", "Estimation": existing.fetchedEst, 
                         "Cached" : use_cached
                         }
-            else:
-                await produce(REQ_TOP, existing.body) #send request to Kafka
-                # Wait for matching estimation
-                estimation = await wait_for_estimation(request.uid)
-                # Update the existing estimation with the new one and its timestamp
-                existing.fetchedEst = estimation
-                existing.last_data = datetime.now()
-                db.commit()
-                db.refresh(existing)
-                return {"status": "Estimation updated", "Estimation": estimation, 
-                        "Cached" : use_cached
-                        }
-        else:
+        
+            # Send new request
             try:
-                await produce(REQ_TOP, req_body) #send request to Kafka
-                # Wait for matching estimation
+                await produce(REQ_TOP, existing.body)
                 estimation = await wait_for_estimation(request.uid)
-                # add new estimation request on DB
-                db_estimation = EstimationM(
-                    uid=sUID,
-                    body=req_body,
-                    last_req=now,
-                    last_data=now,
-                    fetchedEst=estimation
-                )
-                db.add(db_estimation)
-                db.commit()
-                db.refresh(db_estimation)
-
-                return {"status": "Estimation request created", "Estimation": estimation}
             except asyncio.TimeoutError:
-                return {"error": "Timeout waiting for estimation"}
+                raise HTTPException(
+                    status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                    detail="Timeout waiting for estimation"
+                )
+
+            if not estimation:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Estimation not found or invalid"
+                )
+            # Update the existing estimation with the new one and its timestamp
+            existing.fetchedEst = estimation
+            existing.last_data = datetime.now()
+            db.commit()
+            db.refresh(existing)
+            return {"status": "Estimation updated", 
+                    "Estimation": estimation, 
+                    "Cached" : use_cached
+                    }
+        else:
+             # New request
+            try:
+                await produce(REQ_TOP, req_body)
+                estimation = await wait_for_estimation(request.uid)
+            except asyncio.TimeoutError:
+                raise HTTPException(
+                    status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                    detail="Timeout waiting for estimation"
+                )
+
+            if not estimation:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Estimation not found or invalid"
+                )
+            # add new estimation request on DB
+            db_estimation = EstimationM(
+                uid=sUID,
+                body=req_body,
+                last_req=now,
+                last_data=now,
+                fetchedEst=estimation
+            )
+            db.add(db_estimation)
+            db.commit()
+            db.refresh(db_estimation)
+            return {"status": "Estimation request created", 
+                    "Estimation": estimation}
 
     except SQLAlchemyError as e:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail=f"Database error: {str(e)}"
+        )
     
 
 

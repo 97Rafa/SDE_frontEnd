@@ -82,3 +82,11 @@ def get_cons_messages(topic: str, limit: int = 100):
     if topic not in message_buffers:
         return []
     return [m for m in list(message_buffers[topic])[-limit:] if isinstance(m, dict)]
+
+def get_latest_message(topic: str):
+    """
+    Get the most recent message from the in-memory buffer for a topic.
+    """
+    if topic not in message_buffers or not message_buffers[topic]:
+        return None
+    return message_buffers[topic][-1]

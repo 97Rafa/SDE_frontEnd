@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     log_topic: str = "logging_topic"
 
     # Timeouts
-    response_timeout: int = 8
+    response_timeout: int = 6
     estimation_timeout: int = 5
 
     # Parallelism

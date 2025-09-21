@@ -59,37 +59,58 @@ class SDEUser(HttpUser):
         else:
             return []
 
-
+    r_stream_id = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
+    r_dataSKey = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
+    r_synopsis_id = random.randint(1, 3)
 
     # Example: Add Synopsis
-    @task
+    @task(10)
     def add_synopsis(self):
-        r_stream_id = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
-        r_dataSKey = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
-        synopsis_id = random.randint(1, 3)
         payload = {
-            "dataSetkey": r_dataSKey,
-            "streamID": r_stream_id,
-            "synopsisID": synopsis_id,   # adjust based on your schemas
-            "noOfP": 4,
-            "param": self.build_params(synopsis_id)
+            "dataSetkey": self.r_dataSKey,
+            "streamID": self.r_stream_id,
+            "synopsisID": self.r_synopsis_id,   # adjust based on your schemas
+            "param": self.build_params(self.r_synopsis_id),
         }
         with self.client.post("/requests/add", json=payload, catch_response=True) as resp:
             if resp.status_code != 200:
                 resp.failure(f"Error {resp.status_code}: {resp.text}")
 
     # Example: Estimation
-    # @task
+    @task(1)
+    def estimation(self):
+        payload = {
+            "uid": random.randint(1000, 9999),
+            "streamID": self.r_stream_id,
+            "synopsisID": self.r_synopsis_id,
+            "dataSetkey": self.r_dataSKey,
+            "param": [self.r_stream_id],
+            "cache_max_age": str(random.randint(1,60))
+        }
+        self.client.post("/estimations/", json=payload)
+
+      
+    # @task(1)
     # def estimation(self):
     #     payload = {
-    #         "externalUID": str(random.randint(1000, 9999)),
-    #         "uid": random.randint(1, 100),
-    #         "streamID": "1",
-    #         "synopsisID": "SYN1",   # adjust with your schema
+    #         "uid": 1111,
+    #         "streamID": "ForexALLNoExpiry",
+    #         "synopsisID": 3,
     #         "dataSetkey": "Forex",
-    #         "param": ["p1", "p2"],
-    #         "noOfP": 2,
-    #         "cache_max_age": 10
+    #         "param": ["ForexALLNoExpiry"],
+    #         "cache_max_age": "0"
     #     }
     #     self.client.post("/estimations/", json=payload)
 
+
+    @task(1)
+    def del_synopsis(self):
+        payload = {
+            "uid": random.randint(1000, 9999),
+            "dataSetkey": self.r_dataSKey,
+            "streamID": self.r_stream_id,
+            "synopsisID": self.r_synopsis_id
+        }
+        with self.client.post("/requests/delete", json=payload, catch_response=True) as resp:
+            if resp.status_code != 200:
+                resp.failure(f"Error {resp.status_code}: {resp.text}")
