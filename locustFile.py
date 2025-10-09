@@ -87,8 +87,9 @@ class SDEUser(HttpUser):
             "param": [self.r_stream_id],
             "cache_max_age": str(random.randint(1,60))
         }
-        self.client.post("/estimations/", json=payload)
-
+        with self.client.post("/estimations/", json=payload, catch_response=True) as resp:
+            if resp.status_code != 200:
+                resp.failure(f"Error {resp.status_code}: {resp.text}")
       
     # @task(1)
     # def estimation(self):

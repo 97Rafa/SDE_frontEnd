@@ -2,7 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, status
 from sqlalchemy.orm import Session
 from sqlalchemy import exists
 from sqlalchemy.exc import SQLAlchemyError
-from app.schemas import RequestBase, AddRequest,SpecRequest, DataIn, EstRequest, SYNOPSIS_ID_PARAM
+from app.schemas import RequestBase, AddRequest, DataIn, EstRequest, SYNOPSIS_ID_PARAM
 from app.models import EstimationM, Synopsis
 from app.config import settings
 from . import database
@@ -250,7 +250,7 @@ async def create_addrequest(request: AddRequest, db: Session = Depends(get_db)):
     param_list = request.param
     request.requestID = 1
 
-    # --- Step 1: Pre-validations ---
+    # Pre-validations ---
     if db.query(exists().where(Synopsis.uid == request.uid)).scalar():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -282,11 +282,11 @@ async def create_addrequest(request: AddRequest, db: Session = Depends(get_db)):
                 detail=f"Invalid value for '{name}': expected {expected_type.__name__}, got '{value}'"
             )
 
-    # --- Step 2: Produce event ---
+    # Produce event ---
     json_request = request.model_dump()
     await produce(REQ_TOP, json_request)
 
-    # --- Step 3: Handle async response + DB write ---
+    # Handle async response + DB write ---
     try:
         response = await wait_for_response(request.externalUID)
 
@@ -324,7 +324,7 @@ async def create_addrequest(request: AddRequest, db: Session = Depends(get_db)):
 
 
 @app.post("/requests/delete", tags=["Delete Synopsis"])
-async def create_delrequest(request: SpecRequest, db: Session = Depends(get_db)):
+async def create_delrequest(request: RequestBase, db: Session = Depends(get_db)):
     request.requestID = 2
     # Look on Synopsis table to delete it from there too
     synopse_to_delete = db.query(Synopsis).filter(Synopsis.uid == request.uid).first()
@@ -347,7 +347,7 @@ async def create_delrequest(request: SpecRequest, db: Session = Depends(get_db))
 
 
 @app.post("/requests/createSnapshot", tags=["Create Snapshot"])
-async def create_snapshot(request: SpecRequest):
+async def create_snapshot(request: RequestBase):
     request.requestID = 100    
     json_request = request.model_dump()
     await produce(REQ_TOP, json_request)
@@ -359,7 +359,7 @@ async def create_snapshot(request: SpecRequest):
         return {"Error": e.status_code, "Detail" : e.detail}
 
 @app.post("/requests/listSnapshots", tags=["List Snapshots"])
-async def list_snapshots(request: SpecRequest):
+async def list_snapshots(request: RequestBase):
     request.requestID = 301    
     json_request = request.model_dump()
     await produce(REQ_TOP, json_request)
@@ -371,7 +371,7 @@ async def list_snapshots(request: SpecRequest):
         return {"Error": e.status_code, "Detail" : e.detail}
 
 @app.post("/requests/loadLatest", tags=["Load Latest Snapshot"])
-async def load_latest(request: SpecRequest):
+async def load_latest(request: RequestBase):
     request.requestID = 200    
     json_request = request.model_dump()
     await produce(REQ_TOP, json_request)
@@ -383,7 +383,7 @@ async def load_latest(request: SpecRequest):
         return {"Error": e.status_code, "Detail" : e.detail}
 
 @app.post("/requests/loadCustom", tags=["Load Custom Snapshot"])
-async def load_custom(request: SpecRequest):
+async def load_custom(request: RequestBase):
     request.requestID = 201    
     json_request = request.model_dump()
     await produce(REQ_TOP, json_request)

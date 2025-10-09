@@ -3,20 +3,20 @@ from typing import Optional, Dict, Any, List
 from enum import Enum
 import uuid, random
 
-class synopsisEn(Enum):
+class synopsis_id_En(Enum):
     countMin = 1
     bloomFilter = 2
     ams = 3
 
-class operationEn(Enum):
+class operation_mode_En(Enum):
     QUERYABLE = "Queryable"
     CONTINUOUS = "Continuous"
 
-class SynopsisParamSchema(Enum):
+class RequestParamSchema(Enum):
     countMin = {
         "KeyField" : str, 
         "ValueField" : str,
-        "OperationMode" : operationEn, 
+        "OperationMode" : operation_mode_En, 
         "epsilon" : int, 
         "cofidence" : int, 
         "seed" : int
@@ -25,23 +25,23 @@ class SynopsisParamSchema(Enum):
     bloomFilter = {
         "KeyField" : str, 
         "ValueField" : str,
-        "OperationMode" : operationEn, 
+        "OperationMode" : operation_mode_En, 
         "numberOfElements": int, 
         "FalsePositive": int
     }
     ams = {
         "KeyField" : str, 
         "ValueField" : str,
-        "OperationMode" : operationEn, 
+        "OperationMode" : operation_mode_En, 
         "Depth": int, 
         "Buckets": int
     }
 
 
 SYNOPSIS_ID_PARAM = {
-    1: SynopsisParamSchema.countMin,
-    2: SynopsisParamSchema.bloomFilter,
-    3: SynopsisParamSchema.ams
+    1: RequestParamSchema.countMin,
+    2: RequestParamSchema.bloomFilter,
+    3: RequestParamSchema.ams
 }
 
 def generate_uid():
@@ -51,7 +51,7 @@ class RequestBase(BaseModel):
     externalUID: Optional[str] = Field(default_factory=lambda: uuid.uuid4().hex, description="External UID")
     uid: Optional[int] = Field(default_factory=generate_uid, description="Random 4-digit ID")
     streamID: str = Field(description="The name of the stream where the request will be asked")
-    synopsisID: synopsisEn = Field(description="Synopsis type(e.g. 1=CountMin, 2=BloomFilter,...)")
+    synopsisID: synopsis_id_En = Field(description="Synopsis type(e.g. 1=CountMin, 2=BloomFilter,...)")
     dataSetkey: str = Field(description="Hash Value")
     noOfP: Optional[int] = Field(default=4, description="Job parallelism")
     requestID: Optional[int] = Field(default=None)
@@ -62,8 +62,8 @@ class RequestBase(BaseModel):
 class AddRequest(RequestBase):
     param: List[str] = Field(default_factory=list, description="Parameters of the request")
 
-class SpecRequest(RequestBase):
-    uid: int = Field(description="4-digit ID")
+# class SpecRequest(RequestBase):
+#     uid: int = Field(description="4-digit ID")
 
 class EstRequest(RequestBase):
     uid: int = Field(description="4-digit ID")
