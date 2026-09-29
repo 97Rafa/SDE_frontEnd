@@ -226,4 +226,6 @@ curl -X POST "http://localhost:4000/requests/add" \
 
 ## License
 
-This project is currently used as an internal service and does not include a dedicated license file.
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+
+
