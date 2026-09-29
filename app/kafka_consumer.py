@@ -1,7 +1,10 @@
 import asyncio
 import json
-from aiokafka import AIOKafkaConsumer
 from collections import defaultdict, deque
+
+from aiokafka import AIOKafkaConsumer
+from aiokafka.errors import AIOKafkaError, KafkaConnectionError
+
 from app.config import settings
 
 KAFKA_BROKER = settings.kafka_broker
@@ -46,7 +49,7 @@ async def consume_forever(topic: str, retries: int = 5, delay: int = 3):
 
             return
 
-        except Exception as e:
+        except (KafkaConnectionError, AIOKafkaError, OSError, ValueError) as e:
             print(f"⚠️ Kafka consumer connection failed for {topic} (attempt {attempt}/{retries}): {e}")
             await asyncio.sleep(delay)
 
@@ -55,7 +58,7 @@ async def consume_forever(topic: str, retries: int = 5, delay: int = 3):
 
 async def start_consumers(topics: list[str]):
     """Start one background consumer per topic."""
-    global consumer_tasks
+    global consumer_tasks  # noqa: PLW0602
     for topic in topics:
         if topic not in consumer_tasks:
             task = asyncio.create_task(consume_forever(topic))
@@ -64,7 +67,7 @@ async def start_consumers(topics: list[str]):
 
 async def stop_consumers():
     """Stop all background consumer tasks gracefully."""
-    global consumer_tasks
+    global consumer_tasks  # noqa: PLW0602
     for task in consumer_tasks.values():
         task.cancel()
         try:

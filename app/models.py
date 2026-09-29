@@ -1,8 +1,9 @@
-from sqlalchemy import Column, Integer, DateTime, Boolean, String
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.types import TypeDecorator, TEXT
 import json
 from datetime import datetime, timedelta
+
+from sqlalchemy import Column, DateTime, Integer, String
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.types import TEXT, TypeDecorator
 
 Base = declarative_base()
 
@@ -18,7 +19,7 @@ class JsonType(TypeDecorator):
 
 
 def get_expiration(minutes: int = 1) -> datetime:
-    return datetime.now() + timedelta(minutes=minutes)
+    return datetime.now() + timedelta(minutes=minutes)  # noqa: DTZ005
 
 class Synopsis(Base):
     __tablename__ = 'synopsis'
