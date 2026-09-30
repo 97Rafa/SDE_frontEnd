@@ -1,7 +1,6 @@
 import asyncio
 import csv
 import io
-import random
 import time
 from datetime import datetime, timedelta
 from enum import Enum
@@ -10,7 +9,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
 from pydantic import ValidationError
 from sqlalchemy import exists
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -22,7 +21,16 @@ from app.kafka_consumer import (
 )
 from app.kafka_producer import produce, start_producer, stop_producer
 from app.models import EstimationM, Synopsis
-from app.schemas import SYNOPSIS_ID_PARAM, AddRequest, DataIn, EstRequest, RequestBase
+from app.schemas import (
+    PARAM_SCHEMA,
+    SYNOPSIS_ID_PARAM,
+    AddRequest,
+    DataIn,
+    EstRequest,
+    RequestBase,
+    generate_external_uid,
+    generate_uid,
+)
 
 from . import database
 
@@ -46,51 +54,43 @@ tags_metadata = [
         "name": "DataIn",
         "description": "Add new Data in a Synopsis. It sends it through Kafka directly to SDE",
     },
-    {
-        "name": "Add Synopsis",
-        "description": "Add a new Synopsis in SDE"
-    },
+    {"name": "Add Synopsis", "description": "Add a new Synopsis in SDE"},
     {
         "name": "Estimations",
-        "description": "Ask SDE for an Estimation of a specific Synopse"
+        "description": "Ask SDE for an Estimation of a specific Synopse",
     },
-    {
-        "name": "Delete Synopsis",
-        "description": "Delete a Synopsis in SDE(Req ID = 2)"
-    },
+    {"name": "Delete Synopsis", "description": "Delete a Synopsis in SDE(Req ID = 2)"},
     {
         "name": "Create Snapshot",
-        "description": "Create a Synopsis Snapshot in SDE(Req ID = 100)"
+        "description": "Create a Synopsis Snapshot in SDE(Req ID = 100)",
     },
     {
         "name": "List Snapshots",
-        "description": "List Synopsis Snapshots the system(Req ID = 301)"
+        "description": "List Synopsis Snapshots the system(Req ID = 301)",
     },
     {
         "name": "Load Latest Snapshot",
-        "description": "Load the latest Snapshot of a specific Synopsis(Req ID = 200)"
+        "description": "Load the latest Snapshot of a specific Synopsis(Req ID = 200)",
     },
     {
         "name": "Load Custom Snapshot",
-        "description": "Load a specific Snapshot of a specific Synopsis(Req ID = 201)"
+        "description": "Load a specific Snapshot of a specific Synopsis(Req ID = 201)",
     },
     {
         "name": "Create Synopsis from Snapshot",
-        "description": "Create a Synopsis from Snapshot in the system(Req ID = 202)"
+        "description": "Create a Synopsis from Snapshot in the system(Req ID = 202)",
     },
-    {
-        "name": "Kafka Direct",
-        "description": "Direct Kafka Communication(No DB)"
-    },
+    {"name": "Kafka Direct", "description": "Direct Kafka Communication(No DB)"},
     {
         "name": "Initiate SM",
-        "description": "Update Storage Manager Credentials(Req ID = 101)"
+        "description": "Update Storage Manager Credentials(Req ID = 101)",
     },
     {
         "name": "List Synopsis",
-        "description": "List the synopsis in the system right now"
+        "description": "List the synopsis in the system right now",
     },
 ]
+
 
 # Dependency
 def get_db():
@@ -101,44 +101,91 @@ def get_db():
         db.close()
 
 
-
 # FastAPI app
-app = FastAPI(openapi_tags=tags_metadata,
-                title="SDE Front End🚀",
-                description="Here will be the Description",
-                summary="Service Interface for Synopses Data Engine",
-                version="0.0.1")
+app = FastAPI(
+    openapi_tags=tags_metadata,
+    title="SDE Front End🚀",
+    description="Here will be the Description",
+    summary="Service Interface for Synopses Data Engine",
+    version="0.0.1",
+)
+
 
 @app.on_event("startup")
 async def startup_event():
     await start_producer()
     await start_consumers(list(TOPICS))
 
+
 @app.on_event("shutdown")
 async def shutdown_event():
     await stop_producer()
     await stop_consumers()
 
+
 @app.post("/produce/{topic}", tags=["Kafka Direct"])
 async def produce_message(topic: str, msg: dict):
     if topic not in TOPICS:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid topic")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid topic"
+        )
     await produce(topic, msg)
     return {"status": "sent", "topic": topic}
-    
+
+
+def attach_server_metadata(
+    request: RequestBase, request_id: int, *, preserve_uid: bool = False
+) -> RequestBase:
+    if not preserve_uid:
+        request.uid = generate_uid()
+    request.externalUID = generate_external_uid()
+    request.requestID = request_id
+    request.noOfP = settings.parallelism
+    return request
+
+
+def reserve_synopsis_uid() -> int:
+    for _ in range(10):
+        uid = generate_uid()
+        reservation_db = database.SessionLocal()
+        try:
+            reservation_db.add(
+                Synopsis(
+                    uid=uid,
+                    createdAt=datetime.now(),  # noqa: DTZ005
+                    details="Pending synopsis creation",
+                )
+            )
+            reservation_db.commit()
+            return uid
+        except IntegrityError:
+            reservation_db.rollback()
+        finally:
+            reservation_db.close()
+
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Unable to allocate a unique synopsis UID",
+    )
+
+
 @app.get("/consume/{topic}", tags=["Kafka Direct"])
 async def get_messages(topic: str, limit: int = 100):
     if topic not in TOPICS:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid topic")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid topic"
+        )
     messages = get_cons_messages(topic, limit)
     return {"topic": topic, "messages": messages}
+
 
 @app.post("/dataIn/", tags=["DataIn"])
 async def produce_data(data: DataIn):
     json_data = data.model_dump()
     await produce(DAT_TOP, json_data)
     return {"status": "Sent Data", "data": json_data}
-    
+
+
 @app.get("/dataIn/", tags=["DataIn"])
 async def get_data():
     data = get_cons_messages(DAT_TOP)
@@ -149,13 +196,14 @@ UPLOAD_FOLDER = Path("uploads")
 UPLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
 CSV_FILE = File()
 
+
 @app.post("/dataIn/csv", tags=["DataIn"])
 async def create_datain_csv(file: UploadFile = CSV_FILE):
     # Check if file is csv
     if not file.filename.lower().endswith(".csv"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Uploaded file must be a CSV."
+            detail="Uploaded file must be a CSV.",
         )
 
     try:
@@ -167,7 +215,7 @@ async def create_datain_csv(file: UploadFile = CSV_FILE):
         if not required_columns.issubset(csvreader.fieldnames or []):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"CSV must contain columns: {', '.join(required_columns)}"
+                detail=f"CSV must contain columns: {', '.join(required_columns)}",
             )
         records = 0
         for i, row in enumerate(csvreader, start=1):
@@ -175,27 +223,32 @@ async def create_datain_csv(file: UploadFile = CSV_FILE):
                 data_in = DataIn(
                     streamID=row["StreamID"],
                     dataSetkey=row["dataSetkey"],
-                    values={k: v for k, v in row.items() if k not in ["StreamID", "dataSetkey"]}
+                    values={
+                        k: v
+                        for k, v in row.items()
+                        if k not in ["StreamID", "dataSetkey"]
+                    },
                 )
                 await produce(DAT_TOP, data_in.model_dump())
                 records += 1
             except (KeyError, TypeError, ValueError, ValidationError) as exc:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=f"Row {i} failed: {exc}"                    
+                    detail=f"Row {i} failed: {exc}",
                 ) from exc
-    
-        return {"status":status.HTTP_200_OK, 
-                "message": f"Sent {records} messages to '{DAT_TOP}'"}
+
+        return {
+            "status": status.HTTP_200_OK,
+            "message": f"Sent {records} messages to '{DAT_TOP}'",
+        }
 
     except HTTPException:
         raise
     except (OSError, csv.Error) as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An error occurred while processing the CSV."
+            detail="An error occurred while processing the CSV.",
         ) from exc
-
 
 
 async def wait_for_response(externalUID: str) -> dict:
@@ -211,7 +264,7 @@ async def wait_for_response(externalUID: str) -> dict:
         if remaining <= 0:
             raise HTTPException(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                detail="Timeout waiting for Kafka response"
+                detail="Timeout waiting for Kafka response",
             )
 
         log_msgs = get_cons_messages(LOG_TOP)
@@ -235,50 +288,43 @@ async def wait_for_response(externalUID: str) -> dict:
 
 @app.post("/requests/storeInit", tags=["Initiate SM"])
 async def smanager_init():
-    json_request = {
-                        "externalUID": "1000",
-                        "uid":1,
-                        "requestID": 101,
-                        "dataSetkey": "Forex",
-                        "noOfP": 4,
-                        "param": [
-                            "aws"
-                        ]
-                    }
+    request = RequestBase(
+        streamID="storeInit",
+        synopsisID=1,
+        dataSetkey="Forex",
+    )
+    request = attach_server_metadata(request, 101)
+    json_request = request.model_dump()
+    json_request["param"] = ["aws"]
     await produce(REQ_TOP, json_request)
     # Wait for matching response
     try:
-        response = await wait_for_response("1000")
+        response = await wait_for_response(request.externalUID)
         return {"response": response}
     except HTTPException as e:
-        return {"Error": e.status_code, "Detail" : e.detail}
+        return {"Error": e.status_code, "Detail": e.detail}
+
 
 DB_DEPENDENCY = Depends(get_db)
-    
+
+
 @app.post("/requests/add", tags=["Add Synopsis"])
 async def create_addrequest(request: AddRequest, db: Session = DB_DEPENDENCY):
+    request = attach_server_metadata(request, 1, preserve_uid=True)
     synopsis_id = request.synopsisID
     param_list = request.param
-    request.requestID = 1
 
     # Pre-validations ---
-    if db.query(exists().where(Synopsis.uid == request.uid)).scalar():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A record with this UID already exists"
-        )
-
     if synopsis_id not in SYNOPSIS_ID_PARAM:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid synopsisID"
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid synopsisID"
         )
 
-    schema = SYNOPSIS_ID_PARAM[synopsis_id].value
+    schema = PARAM_SCHEMA[SYNOPSIS_ID_PARAM[synopsis_id]]
     if len(param_list) != len(schema):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Expected {len(schema)} parameters: {list(schema.keys())}"
+            detail=f"Expected {len(schema)} parameters: {list(schema.keys())}",
         )
 
     for (name, expected_type), value in zip(schema.items(), param_list):
@@ -290,37 +336,41 @@ async def create_addrequest(request: AddRequest, db: Session = DB_DEPENDENCY):
         except (TypeError, ValueError):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Invalid value for '{name}': expected {expected_type.__name__}, got '{value}'"
+                detail=f"Invalid value for '{name}': expected {expected_type.__name__}, got '{value}'",
             ) from None
+
+    request.uid = reserve_synopsis_uid()
+
+    # Release the DB transaction before the long Kafka wait.
+    db.rollback()
 
     # Produce event ---
     json_request = request.model_dump()
     await produce(REQ_TOP, json_request)
 
+    response = await wait_for_response(request.externalUID)
+
+    content = response.get("content")
+    timestamp = response.get("timestamp")
+
+    new_db = database.SessionLocal()  # Create a new session for DB write
     # Handle async response + DB write ---
     try:
-        response = await wait_for_response(request.externalUID)
-
-        content = response.get("content")
-        timestamp = response.get("timestamp")
-
-        synopsis = Synopsis(
-            uid=request.uid,
-            createdAt=datetime.strptime(timestamp, "%d-%m-%Y %H:%M:%S"),  # noqa: DTZ007
-            details=content[0],
+        synopsis = new_db.query(Synopsis).filter(Synopsis.uid == request.uid).one()
+        synopsis.createdAt = datetime.strptime(  # noqa: DTZ007
+            timestamp, "%d-%m-%Y %H:%M:%S"
         )
-
-        db.add(synopsis)
-        db.commit()
-        db.refresh(synopsis)
+        synopsis.details = content[0]
+        new_db.commit()
+        new_db.refresh(synopsis)
 
         return {"response": response}
 
     except SQLAlchemyError as e:
-        db.rollback()
+        new_db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Database error: {e!s}"
+            detail=f"Database error: {e!s}",
         )
     except HTTPException:
         # Let FastAPI handle any re-raised HTTPException
@@ -329,14 +379,20 @@ async def create_addrequest(request: AddRequest, db: Session = DB_DEPENDENCY):
         # Handle malformed or incomplete Kafka response data
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Invalid response data: {e!s}"
+            detail=f"Invalid response data: {e!s}",
         ) from e
-
+    finally:
+        new_db.close()  # Ensure the new session is closed
 
 
 @app.post("/requests/delete", tags=["Delete Synopsis"])
 async def create_delrequest(request: RequestBase, db: Session = DB_DEPENDENCY):
-    request.requestID = 2
+    if request.uid is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="uid is required to delete a synopsis",
+        )
+    request = attach_server_metadata(request, 2, preserve_uid=True)
     # Look on Synopsis table to delete it from there too
     synopse_to_delete = db.query(Synopsis).filter(Synopsis.uid == request.uid).first()
     if synopse_to_delete is not None:
@@ -345,8 +401,10 @@ async def create_delrequest(request: RequestBase, db: Session = DB_DEPENDENCY):
     else:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No record found with this UID"
+            detail="No record found with this UID",
         )
+
+    db.rollback()
     json_request = request.model_dump()
     await produce(REQ_TOP, json_request)
     # Wait for matching response
@@ -354,12 +412,12 @@ async def create_delrequest(request: RequestBase, db: Session = DB_DEPENDENCY):
         response = await wait_for_response(request.externalUID)
         return {"response": response}
     except HTTPException as e:
-        return {"Error": e.status_code, "Detail" : e.detail}
+        return {"Error": e.status_code, "Detail": e.detail}
 
 
 @app.post("/requests/createSnapshot", tags=["Create Snapshot"])
 async def create_snapshot(request: RequestBase):
-    request.requestID = 100    
+    request = attach_server_metadata(request, 100)
     json_request = request.model_dump()
     await produce(REQ_TOP, json_request)
     # Wait for matching response
@@ -367,11 +425,12 @@ async def create_snapshot(request: RequestBase):
         response = await wait_for_response(request.externalUID)
         return {"response": response}
     except HTTPException as e:
-        return {"Error": e.status_code, "Detail" : e.detail}
+        return {"Error": e.status_code, "Detail": e.detail}
+
 
 @app.post("/requests/listSnapshots", tags=["List Snapshots"])
 async def list_snapshots(request: RequestBase):
-    request.requestID = 301    
+    request = attach_server_metadata(request, 301)
     json_request = request.model_dump()
     await produce(REQ_TOP, json_request)
     # Wait for matching response
@@ -379,11 +438,12 @@ async def list_snapshots(request: RequestBase):
         response = await wait_for_response(request.externalUID)
         return {"response": response}
     except HTTPException as e:
-        return {"Error": e.status_code, "Detail" : e.detail}
+        return {"Error": e.status_code, "Detail": e.detail}
+
 
 @app.post("/requests/loadLatest", tags=["Load Latest Snapshot"])
 async def load_latest(request: RequestBase):
-    request.requestID = 200    
+    request = attach_server_metadata(request, 200)
     json_request = request.model_dump()
     await produce(REQ_TOP, json_request)
     # Wait for matching response
@@ -391,11 +451,12 @@ async def load_latest(request: RequestBase):
         response = await wait_for_response(request.externalUID)
         return {"response": response}
     except HTTPException as e:
-        return {"Error": e.status_code, "Detail" : e.detail}
+        return {"Error": e.status_code, "Detail": e.detail}
+
 
 @app.post("/requests/loadCustom", tags=["Load Custom Snapshot"])
 async def load_custom(request: RequestBase):
-    request.requestID = 201    
+    request = attach_server_metadata(request, 201)
     json_request = request.model_dump()
     await produce(REQ_TOP, json_request)
     # Wait for matching response
@@ -403,31 +464,55 @@ async def load_custom(request: RequestBase):
         response = await wait_for_response(request.externalUID)
         return {"response": response}
     except HTTPException as e:
-        return {"Error": e.status_code, "Detail" : e.detail}
+        return {"Error": e.status_code, "Detail": e.detail}
+
 
 @app.post("/requests/createFromSnap", tags=["Create Synopsis from Snapshot"])
-async def create_fromSnap(request: AddRequest,version_number: int = 0, new_uid: int = random.randint(90000, 100000), db: Session = DB_DEPENDENCY):
-    request.requestID = 202 
+async def create_fromSnap(
+    request: AddRequest,
+    version_number: int = 0,
+    new_uid: int = 0,
+    db: Session = DB_DEPENDENCY,
+):
+    request = attach_server_metadata(request, 202)
+    if new_uid == 0:
+        new_uid = generate_uid()
     request.param = [version_number, new_uid]
     json_request = request.model_dump()
     await produce(REQ_TOP, json_request)
     # Wait for matching response
     try:
         response = await wait_for_response(request.externalUID)
-        content=response.get('content')
-        timestamp = response.get('timestamp')
-        synopsis = Synopsis(
-                    uid=request.uid,
-                    createdAt=datetime.strptime(timestamp, "%d-%m-%Y %H:%M:%S"),  # noqa: DTZ007
-                    details=content[0]
-                    )
-        db.add(synopsis)
-        db.commit()
-        db.refresh(synopsis)
-        return {"response": response}
-    except HTTPException as e:
-        return {"Error": e.status_code, "Detail" : e.detail}
-    
+        content = response.get("content")
+        timestamp = response.get("timestamp")
+
+        new_db = database.SessionLocal()
+        try:
+            synopsis = Synopsis(
+                uid=request.uid,
+                createdAt=datetime.strptime(timestamp, "%d-%m-%Y %H:%M:%S"),  # noqa: DTZ007
+                details=content[0],
+            )
+            new_db.add(synopsis)
+            new_db.commit()
+            new_db.refresh(synopsis)
+            return {"response": response}
+        except SQLAlchemyError as e:
+            new_db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Database error: {e!s}",
+            )
+        finally:
+            new_db.close()
+    except HTTPException:
+        raise
+    except (KeyError, TypeError, ValueError, IndexError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Invalid response data: {e!s}",
+        ) from e
+
 
 async def wait_for_estimation(uid: int) -> dict:
     timeout = RESPONSE_TIMEOUT
@@ -437,8 +522,7 @@ async def wait_for_estimation(uid: int) -> dict:
         remaining = timeout - (time.monotonic() - start_time)
         if remaining <= 0:
             raise HTTPException(
-                status_code=504,
-                detail="Timeout waiting for Kafka response"
+                status_code=504, detail="Timeout waiting for Kafka response"
             )
 
         try:
@@ -457,6 +541,7 @@ async def wait_for_estimation(uid: int) -> dict:
 
         await asyncio.sleep(0.1)  # avoid busy loop
 
+
 # It compares the time that has passed since the last data where added on the table
 # with the max age of the estimation the request specifies. If max age is longer
 # the old estimation from the table can still be used
@@ -469,34 +554,50 @@ def should_use_cached(estimation: EstimationM, max_age_minutes: int) -> bool:
 @app.post("/estimations/", tags=["Estimations"])
 async def create_estimation(request: EstRequest, db: Session = DB_DEPENDENCY):
     request.requestID = 3
-    #timestamp for last_req
+    request.noOfP = settings.parallelism
+    # timestamp for last_req
     now = datetime.now()  # noqa: DTZ005
-    req_body = request.model_dump(include={"uid","streamID", "synopsisID","dataSetkey", "param", "requestID", "noOfP"})
-    sUID=request.uid
+    req_body = request.model_dump(
+        include={
+            "uid",
+            "streamID",
+            "synopsisID",
+            "dataSetkey",
+            "param",
+            "requestID",
+            "noOfP",
+        }
+    )
+    sUID = request.uid
 
     # Check if UID exists in synopsis table
     synopsis_exists = db.query(exists().where(Synopsis.uid == request.uid)).scalar()
     if synopsis_exists is False:
-        raise HTTPException(status_code = status.HTTP_404_NOT_FOUND,
-                            detail = "There is no synopsis with this UID"
-                            )
-   
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="There is no synopsis with this UID",
+        )
+
     try:
         # check if the same estimation request has been sent before
         existing = db.query(EstimationM).filter(EstimationM.uid == sUID).first()
 
         if existing:
             # update existing request timestamp
-            existing.last_req = now        
+            existing.last_req = now
             db.commit()
             db.refresh(existing)
 
             use_cached = should_use_cached(existing, request.cache_max_age)
             if use_cached:
-                return {"status": "Estimation updated", "Estimation": existing.fetchedEst, 
-                        "Cached" : use_cached
-                        }
-        
+                return {
+                    "status": "Estimation updated",
+                    "Estimation": existing.fetchedEst,
+                    "Cached": use_cached,
+                }
+
+            db.rollback()
+
             # Send new request
             try:
                 await produce(REQ_TOP, existing.body)
@@ -504,65 +605,98 @@ async def create_estimation(request: EstRequest, db: Session = DB_DEPENDENCY):
             except asyncio.TimeoutError:
                 raise HTTPException(
                     status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                    detail="Timeout waiting for estimation"
+                    detail="Timeout waiting for estimation",
                 )
 
             if not estimation:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Estimation not found or invalid"
+                    detail="Estimation not found or invalid",
                 )
             # Update the existing estimation with the new one and its timestamp
             existing.fetchedEst = estimation
             existing.last_data = datetime.now()  # noqa: DTZ005
-            db.commit()
-            db.refresh(existing)
-            return {"status": "Estimation updated", 
-                    "Estimation": estimation, 
-                    "Cached" : use_cached
-                    }
+
+            update_db = database.SessionLocal()
+            try:
+                db_existing = (
+                    update_db.query(EstimationM).filter(EstimationM.uid == sUID).first()
+                )
+                if db_existing is not None:
+                    db_existing.fetchedEst = estimation
+                    db_existing.last_data = existing.last_data
+                    db_existing.last_req = now
+                    update_db.commit()
+                    update_db.refresh(db_existing)
+            except SQLAlchemyError as e:
+                update_db.rollback()
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Database error: {e!s}",
+                )
+            finally:
+                update_db.close()
+
+            return {
+                "status": "Estimation updated",
+                "Estimation": estimation,
+                "Cached": use_cached,
+            }
         else:
-             # New request
+            db.rollback()
+            # New request
             try:
                 await produce(REQ_TOP, req_body)
                 estimation = await wait_for_estimation(request.uid)
             except asyncio.TimeoutError:
                 raise HTTPException(
                     status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                    detail="Timeout waiting for estimation"
+                    detail="Timeout waiting for estimation",
                 )
 
             if not estimation:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Estimation not found or invalid"
+                    detail="Estimation not found or invalid",
                 )
             # add new estimation request on DB
-            db_estimation = EstimationM(
-                uid=sUID,
-                body=req_body,
-                last_req=now,
-                last_data=now,
-                fetchedEst=estimation
-            )
-            db.add(db_estimation)
-            db.commit()
-            db.refresh(db_estimation)
-            return {"status": "Estimation request created", 
-                    "Estimation": estimation}
+            new_db = database.SessionLocal()
+            try:
+                db_estimation = EstimationM(
+                    uid=sUID,
+                    body=req_body,
+                    last_req=now,
+                    last_data=now,
+                    fetchedEst=estimation,
+                )
+                new_db.add(db_estimation)
+                new_db.commit()
+                new_db.refresh(db_estimation)
+                return {
+                    "status": "Estimation request created",
+                    "Estimation": estimation,
+                }
+            except SQLAlchemyError as e:
+                new_db.rollback()
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Database error: {e!s}",
+                )
+            finally:
+                new_db.close()
 
     except SQLAlchemyError as e:
         db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
-            detail=f"Database error: {e!s}"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database error: {e!s}",
         )
-    
 
 
 @app.get("/estimations/", tags=["Estimations"])
 def read_estimations(db: Session = DB_DEPENDENCY):
     return db.query(EstimationM).all()
+
 
 @app.get("/synopsis/", tags=["List Synopsis"])
 def list_synopsis(db: Session = DB_DEPENDENCY):

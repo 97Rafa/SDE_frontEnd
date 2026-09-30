@@ -3,7 +3,7 @@ import json
 from collections import defaultdict, deque
 
 from aiokafka import AIOKafkaConsumer
-from aiokafka.errors import AIOKafkaError, KafkaConnectionError
+from aiokafka.errors import KafkaError
 
 from app.config import settings
 
@@ -49,11 +49,15 @@ async def consume_forever(topic: str, retries: int = 5, delay: int = 3):
 
             return
 
-        except (KafkaConnectionError, AIOKafkaError, OSError, ValueError) as e:
-            print(f"⚠️ Kafka consumer connection failed for {topic} (attempt {attempt}/{retries}): {e}")
+        except (KafkaError, OSError, ValueError) as e:
+            print(
+                f"⚠️ Kafka consumer connection failed for {topic} (attempt {attempt}/{retries}): {e}"
+            )
             await asyncio.sleep(delay)
 
-    raise RuntimeError(f"❌ Failed to connect Kafka consumer for {topic} after {retries} retries")
+    raise RuntimeError(
+        f"❌ Failed to connect Kafka consumer for {topic} after {retries} retries"
+    )
 
 
 async def start_consumers(topics: list[str]):
@@ -85,6 +89,7 @@ def get_cons_messages(topic: str, limit: int = 100):
     if topic not in message_buffers:
         return []
     return [m for m in list(message_buffers[topic])[-limit:] if isinstance(m, dict)]
+
 
 def get_latest_message(topic: str):
     """
